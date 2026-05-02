@@ -121,6 +121,14 @@ let activeView = "dashboard";
 let configMode = false;
 let portraitDataUrl = null;
 
+// Inventory UI state. addingItem and editingItemId are mutually exclusive
+// (only one form open at a time). expandedItemId is independent.
+// confirmingDeleteId tracks which item is one click away from deletion.
+let addingItem = false;
+let editingItemId = null;
+let expandedItemId = null;
+let confirmingDeleteId = null;
+
 // ============================================================
 // INIT
 // ============================================================
@@ -206,9 +214,29 @@ async function loadCharacter() {
     if (c && typeof c === "object") character = c;
   } catch (e) {}
   if (!character) character = createDefaultCharacter();
+  migrateInventory(character);
   // Always rebuild spell slots after load so changing class outside the app
   // (manual edit) is reflected, and capacity matches current class+level.
   rebuildSpellSlots(character);
+}
+
+// v1.0.4 stored inventory items as {id, text}. v1.0.5 stores them as
+// {id, name, details, quantity}. Convert in place — first line of the old
+// text becomes name, the rest becomes details. quantity defaults to null
+// (non-stackable) since old items had no concept of count.
+function migrateInventory(c) {
+  if (!Array.isArray(c.inventory)) { c.inventory = []; return; }
+  c.inventory = c.inventory.map(item => {
+    if (typeof item.name === "string") return item;
+    const text = (item.text || "").trim();
+    const lines = text.split(/\r?\n/);
+    return {
+      id: item.id || ("i" + Date.now() + Math.random().toString(36).slice(2, 7)),
+      name: lines[0] || "Item",
+      details: lines.slice(1).join("\n").trim(),
+      quantity: null,
+    };
+  });
 }
 
 async function saveCharacter() {
@@ -1162,62 +1190,254 @@ function renderInventory() {
   const container = document.getElementById("inventory");
   if (!container) return;
   const items = character.inventory || [];
-  const list = items.length === 0
-    ? `<div class="inventory-empty">Nothing carried. Click "+ ADD ITEM" to start.</div>`
-    : items.map(item => `
-        <div class="inventory-item">
-          <textarea data-inv-id="${item.id}" placeholder="What is it? (be as brief or detailed as you want)">${escapeHtml(item.text)}</textarea>
-          <button class="inventory-delete" data-delete-inv="${item.id}" title="delete">×</button>
-        </div>
-      `).join("");
+
+  let listHtml;
+  if (items.length === 0 && !addingItem) {
+    listHtml = `<div class="inventory-empty">Nothing carried. Click "+ ADD ITEM" to start.</div>`;
+  } else {
+    listHtml = items.map(item => renderInventoryItem(item)).join("");
+  }
+
+  // Hide ADD button while the add form is open so there are no stray click
+  // targets that would tear down the user's in-progress entry.
+  const addBtn = addingItem
+    ? ""
+    : `<button class="btn" id="add-item">+ ADD ITEM</button>`;
+
   container.innerHTML = `
     <div class="inventory-header">
       <div class="inventory-title">INVENTORY</div>
-      <button class="btn" id="add-item">+ ADD ITEM</button>
+      ${addBtn}
     </div>
-    <div class="inventory-list">${list}</div>
+    ${addingItem ? renderItemForm(null) : ""}
+    <div class="inventory-list">${listHtml}</div>
   `;
   wireInventory();
 }
 
+function renderInventoryItem(item) {
+  if (editingItemId === item.id) return renderItemForm(item);
+
+  const hasDetails = !!(item.details && item.details.trim());
+  const hasQty = item.quantity !== null && item.quantity !== undefined;
+  const isExpanded = expandedItemId === item.id && hasDetails;
+  const isConfirming = confirmingDeleteId === item.id;
+
+  const arrow = hasDetails
+    ? `<span class="expand-arrow">${isExpanded ? "▼" : "▶"}</span>`
+    : `<span class="expand-arrow-empty"></span>`;
+  const nameAttrs = hasDetails
+    ? `class="item-name clickable" data-toggle-expand="${item.id}"`
+    : `class="item-name"`;
+
+  const qtyHtml = hasQty
+    ? `
+      <div class="item-qty">
+        <button class="qty-btn" data-qty-dec="${item.id}" title="decrease">−</button>
+        <span class="qty-num">${item.quantity}</span>
+        <button class="qty-btn" data-qty-inc="${item.id}" title="increase">+</button>
+      </div>`
+    : "";
+
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-delete-inv="${item.id}" title="click again to confirm">SURE?</button>`
+    : `<button class="item-delete" data-delete-inv="${item.id}" title="delete">×</button>`;
+
+  const detailsHtml = isExpanded
+    ? `<div class="item-details">${escapeHtml(item.details)}</div>`
+    : "";
+
+  return `
+    <div class="inventory-item ${isExpanded ? "expanded" : ""}">
+      <div class="item-row">
+        <div ${nameAttrs}>${arrow}${escapeHtml(item.name)}</div>
+        ${qtyHtml}
+        <button class="item-edit" data-edit-item="${item.id}">EDIT</button>
+        ${deleteBtn}
+      </div>
+      ${detailsHtml}
+    </div>
+  `;
+}
+
+// Used for both Add (item=null) and Edit (item=existing).
+function renderItemForm(item) {
+  const isEdit = !!item;
+  const nameVal = isEdit ? escapeHtml(item.name) : "";
+  const detailsVal = isEdit ? escapeHtml(item.details || "") : "";
+  const qtyVal = isEdit && item.quantity != null ? item.quantity : "";
+  const ns = isEdit ? `data-edit-name="${item.id}"` : `id="add-name"`;
+  const ds = isEdit ? `data-edit-details="${item.id}"` : `id="add-details"`;
+  const qs = isEdit ? `data-edit-qty="${item.id}"` : `id="add-qty"`;
+  const saveAttr = isEdit ? `data-save-edit="${item.id}"` : `id="add-save"`;
+  const cancelAttr = isEdit ? `data-cancel-edit="${item.id}"` : `id="add-cancel"`;
+  const saveDisabled = isEdit ? "" : "disabled";
+  const wrapClass = isEdit ? "inventory-item editing" : "inventory-item adding";
+
+  return `
+    <div class="${wrapClass}">
+      <div class="item-form">
+        <label class="form-label">Name <span class="required">*</span></label>
+        <input type="text" ${ns} value="${nameVal}" placeholder="What is it?" />
+
+        <label class="form-label">Details <span class="optional">(optional)</span></label>
+        <textarea ${ds} placeholder="Description, properties, lore...">${detailsVal}</textarea>
+
+        <label class="form-label">Quantity <span class="optional">(empty for non-stackable)</span></label>
+        <input type="number" min="0" ${qs} value="${qtyVal}" placeholder="—" />
+
+        <div class="form-buttons">
+          <button class="btn" ${saveAttr} ${saveDisabled}>SAVE</button>
+          <button class="btn danger" ${cancelAttr}>CANCEL</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function wireInventory() {
+  // Reset confirm state when ANY non-delete action fires. (Each handler that
+  // re-renders calls resetConfirm() before doing its work; the delete handler
+  // is the only one that reads confirmingDeleteId.)
+  const resetConfirm = () => { confirmingDeleteId = null; };
+
+  // ----- ADD -----
   const addBtn = document.getElementById("add-item");
   if (addBtn) {
     addBtn.addEventListener("click", () => {
-      character.inventory = character.inventory || [];
-      const newItem = {
-        id: "i" + Date.now() + Math.random().toString(36).slice(2, 7),
-        text: "",
-      };
-      character.inventory.push(newItem);
-      saveCharacter();
+      resetConfirm();
+      addingItem = true;
+      editingItemId = null;
       renderInventory();
-      // Drop focus into the freshly-added item so the user can just start typing.
-      const ta = document.querySelector(`textarea[data-inv-id="${newItem.id}"]`);
-      if (ta) ta.focus();
+      const nameInput = document.getElementById("add-name");
+      if (nameInput) nameInput.focus();
     });
   }
 
-  // No rerender on keystroke — only the textarea's own value is changing,
-  // nothing derived. Just save.
-  document.querySelectorAll("textarea[data-inv-id]").forEach(ta => {
-    ta.addEventListener("input", e => {
-      const id = e.target.dataset.invId;
-      const item = (character.inventory || []).find(i => i.id === id);
-      if (!item) return;
-      item.text = e.target.value;
+  wireFormControls({
+    nameSel: "#add-name",
+    saveSel: "#add-save",
+    cancelSel: "#add-cancel",
+    onSave: () => {
+      const name = (document.getElementById("add-name").value || "").trim();
+      if (!name) return;
+      const details = (document.getElementById("add-details").value || "").trim();
+      const qtyStr = (document.getElementById("add-qty").value || "").trim();
+      const quantity = qtyStr === "" ? null : Math.max(0, Number(qtyStr) || 0);
+      character.inventory = character.inventory || [];
+      character.inventory.push({
+        id: "i" + Date.now() + Math.random().toString(36).slice(2, 7),
+        name, details, quantity,
+      });
       saveCharacter();
+      addingItem = false;
+      renderInventory();
+    },
+    onCancel: () => { addingItem = false; renderInventory(); },
+  });
+
+  // ----- EDIT -----
+  document.querySelectorAll("[data-edit-item]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingItemId = btn.dataset.editItem;
+      addingItem = false;
+      renderInventory();
+      const nameInput = document.querySelector(`[data-edit-name="${editingItemId}"]`);
+      if (nameInput) { nameInput.focus(); nameInput.select(); }
     });
   });
 
-  document.querySelectorAll("[data-delete-inv]").forEach(btn => {
+  document.querySelectorAll("[data-save-edit]").forEach(btn => {
+    const id = btn.dataset.saveEdit;
+    wireFormControls({
+      nameSel: `[data-edit-name="${id}"]`,
+      saveSel: `[data-save-edit="${id}"]`,
+      cancelSel: `[data-cancel-edit="${id}"]`,
+      onSave: () => {
+        const item = (character.inventory || []).find(i => i.id === id);
+        if (!item) return;
+        const name = (document.querySelector(`[data-edit-name="${id}"]`).value || "").trim();
+        if (!name) return;
+        item.name = name;
+        item.details = (document.querySelector(`[data-edit-details="${id}"]`).value || "").trim();
+        const qtyStr = (document.querySelector(`[data-edit-qty="${id}"]`).value || "").trim();
+        item.quantity = qtyStr === "" ? null : Math.max(0, Number(qtyStr) || 0);
+        saveCharacter();
+        editingItemId = null;
+        renderInventory();
+      },
+      onCancel: () => { editingItemId = null; renderInventory(); },
+    });
+  });
+
+  // ----- EXPAND -----
+  document.querySelectorAll("[data-toggle-expand]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      const id = el.dataset.toggleExpand;
+      expandedItemId = expandedItemId === id ? null : id;
+      renderInventory();
+    });
+  });
+
+  // ----- QUANTITY -----
+  document.querySelectorAll("[data-qty-inc]").forEach(btn => {
     btn.addEventListener("click", () => {
-      const id = btn.dataset.deleteInv;
-      character.inventory = (character.inventory || []).filter(i => i.id !== id);
+      resetConfirm();
+      const item = (character.inventory || []).find(i => i.id === btn.dataset.qtyInc);
+      if (!item) return;
+      item.quantity = (Number(item.quantity) || 0) + 1;
       saveCharacter();
       renderInventory();
     });
   });
+  document.querySelectorAll("[data-qty-dec]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      const item = (character.inventory || []).find(i => i.id === btn.dataset.qtyDec);
+      if (!item) return;
+      item.quantity = Math.max(0, (Number(item.quantity) || 0) - 1);
+      saveCharacter();
+      renderInventory();
+    });
+  });
+
+  // ----- DELETE (click-to-confirm) -----
+  document.querySelectorAll("[data-delete-inv]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deleteInv;
+      if (confirmingDeleteId === id) {
+        character.inventory = (character.inventory || []).filter(i => i.id !== id);
+        saveCharacter();
+        confirmingDeleteId = null;
+        if (expandedItemId === id) expandedItemId = null;
+        if (editingItemId === id) editingItemId = null;
+      } else {
+        confirmingDeleteId = id;
+      }
+      renderInventory();
+    });
+  });
+}
+
+// Shared form-control wiring for both Add and Edit forms: enables/disables
+// the Save button based on the Name field, hooks Enter-to-save, and binds
+// Save/Cancel handlers.
+function wireFormControls({ nameSel, saveSel, cancelSel, onSave, onCancel }) {
+  const nameEl = document.querySelector(nameSel);
+  const saveEl = document.querySelector(saveSel);
+  const cancelEl = document.querySelector(cancelSel);
+  if (nameEl && saveEl) {
+    const updateDisabled = () => { saveEl.disabled = nameEl.value.trim().length === 0; };
+    updateDisabled();
+    nameEl.addEventListener("input", updateDisabled);
+    nameEl.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !saveEl.disabled) { e.preventDefault(); onSave(); }
+    });
+  }
+  if (saveEl) saveEl.addEventListener("click", onSave);
+  if (cancelEl) cancelEl.addEventListener("click", onCancel);
 }
 
 // ============================================================
