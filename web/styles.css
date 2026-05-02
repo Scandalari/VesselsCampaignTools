@@ -1049,11 +1049,118 @@ html, body {
   box-shadow: none;
 }
 
-.inventory-empty {
+.inventory-empty,
+.notes-empty {
   color: #4a4a5a;
   font-size: 13px;
   font-style: italic;
   text-align: center;
   padding: 60px 0;
   letter-spacing: 0.05em;
+}
+
+/* ============================================================
+   NOTES (folders + per-folder note lists)
+   ============================================================ */
+.notes-container {
+  padding: 24px 32px;
+  max-width: 880px;
+  margin: 0 auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.notes-header {
+  display: grid;
+  grid-template-columns: 100px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #1a1a2e;
+  margin-bottom: 16px;
+  min-height: 36px;
+}
+
+.notes-title {
+  font-size: 18px;
+  letter-spacing: 0.3em;
+  font-weight: 800;
+  color: #ff2a8a;
+  text-shadow: 0 0 10px rgba(255, 42, 138, 0.4);
+  text-align: center;
+}
+
+.notes-header .back-btn {
+  font-size: 9px;
+  padding: 6px 10px;
+  justify-self: start;
+}
+
+/* --- folder grid --- */
+.notes-folders-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  align-content: start;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.folder-card {
+  border: 1px solid #1a1a2e;
+  background: #0f0f1a;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 120ms, box-shadow 120ms;
+  min-height: 110px;
+}
+
+.folder-card:hover {
+  border-color: #00d4e0;
+}
+
+.folder-card.editing {
+  border-color: #00d4e0;
+  box-shadow: 0 0 12px rgba(0, 212, 224, 0.25);
+}
+
+.folder-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #00d4e0;
+  letter-spacing: 0.04em;
+  padding: 4px 0;
+}
+.folder-card-name.clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: text-shadow 120ms;
+}
+.folder-card-name.clickable:hover {
+  text-shadow: 0 0 8px rgba(0, 212, 224, 0.6);
+}
+
+.folder-card-count {
+  font-size: 11px;
+  color: #8a7a9a;
+  letter-spacing: 0.1em;
+}
+
+.folder-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.folder-form {
+  border: 1px solid #ff2a8a;
+  background: #0f0f1a;
+  box-shadow: 0 0 12px rgba(255, 42, 138, 0.25);
+  padding: 14px;
+  margin-bottom: 16px;
 }

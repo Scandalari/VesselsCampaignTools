@@ -129,6 +129,17 @@ let editingItemId = null;
 let expandedItemId = null;
 let confirmingDeleteId = null;
 
+// Notes UI state. selectedFolderId === null means we're viewing the folder
+// grid; non-null means we're inside that folder viewing its notes.
+let selectedFolderId = null;
+let addingFolder = false;
+let editingFolderId = null;
+let confirmingFolderDeleteId = null;
+let addingNote = false;
+let editingNoteId = null;
+let expandedNoteId = null;
+let confirmingNoteDeleteId = null;
+
 // ============================================================
 // INIT
 // ============================================================
@@ -143,6 +154,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireUpdateButton();
   renderDashboard();
   renderInventory();
+  renderNotes();
 });
 
 window.addEventListener("pywebviewready", async () => {
@@ -154,6 +166,7 @@ window.addEventListener("pywebviewready", async () => {
   setActiveView(activeView);
   renderDashboard();
   renderInventory();
+  renderNotes();
 });
 
 function createDefaultCharacter() {
@@ -174,6 +187,7 @@ function createDefaultCharacter() {
     action_economy: { Action: true, Bonus: true, Reaction: true, Movement: true, Object: true },
     proficiencies: { armor: "", weapons: "", tools: "", languages: "" },
     inventory: [],
+    notes: { folders: [], items: [] },
   };
 }
 
@@ -215,9 +229,19 @@ async function loadCharacter() {
   } catch (e) {}
   if (!character) character = createDefaultCharacter();
   migrateInventory(character);
+  migrateNotes(character);
   // Always rebuild spell slots after load so changing class outside the app
   // (manual edit) is reflected, and capacity matches current class+level.
   rebuildSpellSlots(character);
+}
+
+function migrateNotes(c) {
+  if (!c.notes || typeof c.notes !== "object" || Array.isArray(c.notes)) {
+    c.notes = { folders: [], items: [] };
+    return;
+  }
+  if (!Array.isArray(c.notes.folders)) c.notes.folders = [];
+  if (!Array.isArray(c.notes.items)) c.notes.items = [];
 }
 
 // v1.0.4 stored inventory items as {id, text}. v1.0.5 stores them as
@@ -1438,6 +1462,394 @@ function wireFormControls({ nameSel, saveSel, cancelSel, onSave, onCancel }) {
   }
   if (saveEl) saveEl.addEventListener("click", onSave);
   if (cancelEl) cancelEl.addEventListener("click", onCancel);
+}
+
+// ============================================================
+// NOTES (folders + items, mirrors PWA's DM characters layout)
+// ============================================================
+
+function renderNotes() {
+  const container = document.getElementById("notes");
+  if (!container) return;
+
+  // Clear stale folder selection if the folder was deleted out from under us.
+  if (selectedFolderId &&
+      !(character.notes.folders || []).find(f => f.id === selectedFolderId)) {
+    selectedFolderId = null;
+  }
+
+  container.innerHTML = selectedFolderId
+    ? renderNotesInFolderView()
+    : renderFoldersView();
+  wireNotes();
+}
+
+function renderFoldersView() {
+  const folders = character.notes.folders || [];
+
+  let body;
+  if (folders.length === 0 && !addingFolder) {
+    body = `<div class="notes-empty">No folders yet. Click "+ NEW FOLDER" to start organizing your notes.</div>`;
+  } else {
+    body = `<div class="notes-folders-grid">${folders.map(f => renderFolderCard(f)).join("")}</div>`;
+  }
+
+  const addBtn = addingFolder
+    ? `<div></div>`
+    : `<button class="btn" id="add-folder">+ NEW FOLDER</button>`;
+
+  return `
+    <div class="notes-header">
+      <div></div>
+      <div class="notes-title">NOTES</div>
+      ${addBtn}
+    </div>
+    ${addingFolder ? renderFolderForm(null) : ""}
+    ${body}
+  `;
+}
+
+function renderFolderCard(folder) {
+  if (editingFolderId === folder.id) return renderFolderForm(folder);
+
+  const noteCount = (character.notes.items || []).filter(n => n.folderId === folder.id).length;
+  const isConfirming = confirmingFolderDeleteId === folder.id;
+
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-delete-folder="${folder.id}">SURE?</button>`
+    : `<button class="item-delete" data-delete-folder="${folder.id}">×</button>`;
+
+  return `
+    <div class="folder-card">
+      <div class="folder-card-name clickable" data-enter-folder="${folder.id}">${escapeHtml(folder.name)}</div>
+      <div class="folder-card-count">${noteCount} ${noteCount === 1 ? "note" : "notes"}</div>
+      <div class="folder-card-actions">
+        <button class="item-edit" data-rename-folder="${folder.id}">RENAME</button>
+        ${deleteBtn}
+      </div>
+    </div>
+  `;
+}
+
+function renderFolderForm(folder) {
+  const isEdit = !!folder;
+  const nameVal = isEdit ? escapeHtml(folder.name) : "";
+  const ns = isEdit ? `data-edit-folder-name="${folder.id}"` : `id="new-folder-name"`;
+  const saveAttr = isEdit ? `data-save-folder="${folder.id}"` : `id="folder-save"`;
+  const cancelAttr = isEdit ? `data-cancel-folder="${folder.id}"` : `id="folder-cancel"`;
+  const saveDisabled = isEdit ? "" : "disabled";
+  const wrapClass = isEdit ? "folder-card editing" : "folder-form";
+
+  return `
+    <div class="${wrapClass}">
+      <div class="item-form">
+        <label class="form-label">Folder Name <span class="required">*</span></label>
+        <input type="text" ${ns} value="${nameVal}" placeholder="Folder name" />
+        <div class="form-buttons">
+          <button class="btn" ${saveAttr} ${saveDisabled}>SAVE</button>
+          <button class="btn danger" ${cancelAttr}>CANCEL</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderNotesInFolderView() {
+  const folder = character.notes.folders.find(f => f.id === selectedFolderId);
+  if (!folder) return "";
+
+  const notes = (character.notes.items || []).filter(n => n.folderId === selectedFolderId);
+
+  let body;
+  if (notes.length === 0 && !addingNote) {
+    body = `<div class="notes-empty">No notes in this folder. Click "+ NEW NOTE" to start.</div>`;
+  } else {
+    body = `<div class="inventory-list">${notes.map(n => renderNoteItem(n)).join("")}</div>`;
+  }
+
+  const addBtn = addingNote
+    ? `<div></div>`
+    : `<button class="btn" id="add-note">+ NEW NOTE</button>`;
+
+  return `
+    <div class="notes-header">
+      <button class="btn back-btn" id="back-to-folders">FOLDERS</button>
+      <div class="notes-title">${escapeHtml(folder.name)}</div>
+      ${addBtn}
+    </div>
+    ${addingNote ? renderNoteForm(null) : ""}
+    ${body}
+  `;
+}
+
+function renderNoteItem(note) {
+  if (editingNoteId === note.id) return renderNoteForm(note);
+
+  const hasBody = !!(note.body && note.body.trim());
+  const isExpanded = expandedNoteId === note.id && hasBody;
+  const isConfirming = confirmingNoteDeleteId === note.id;
+
+  const arrow = hasBody
+    ? `<span class="expand-arrow">${isExpanded ? "▼" : "▶"}</span>`
+    : `<span class="expand-arrow-empty"></span>`;
+  const titleAttrs = hasBody
+    ? `class="item-name clickable" data-toggle-note-expand="${note.id}"`
+    : `class="item-name"`;
+
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-delete-note="${note.id}">SURE?</button>`
+    : `<button class="item-delete" data-delete-note="${note.id}">×</button>`;
+
+  const bodyHtml = isExpanded
+    ? `<div class="item-details">${escapeHtml(note.body)}</div>`
+    : "";
+
+  return `
+    <div class="inventory-item ${isExpanded ? "expanded" : ""}">
+      <div class="item-row">
+        <div ${titleAttrs}>${arrow}${escapeHtml(note.title)}</div>
+        <button class="item-edit" data-edit-note="${note.id}">EDIT</button>
+        ${deleteBtn}
+      </div>
+      ${bodyHtml}
+    </div>
+  `;
+}
+
+function renderNoteForm(note) {
+  const isEdit = !!note;
+  const titleVal = isEdit ? escapeHtml(note.title) : "";
+  const bodyVal = isEdit ? escapeHtml(note.body || "") : "";
+  const ts = isEdit ? `data-edit-note-title="${note.id}"` : `id="add-note-title"`;
+  const bs = isEdit ? `data-edit-note-body="${note.id}"` : `id="add-note-body"`;
+  const saveAttr = isEdit ? `data-save-note="${note.id}"` : `id="add-note-save"`;
+  const cancelAttr = isEdit ? `data-cancel-note="${note.id}"` : `id="add-note-cancel"`;
+  const saveDisabled = isEdit ? "" : "disabled";
+  const wrapClass = isEdit ? "inventory-item editing" : "inventory-item adding";
+
+  return `
+    <div class="${wrapClass}">
+      <div class="item-form">
+        <label class="form-label">Title <span class="required">*</span></label>
+        <input type="text" ${ts} value="${titleVal}" placeholder="Note title" />
+
+        <label class="form-label">Body <span class="optional">(optional)</span></label>
+        <textarea ${bs} placeholder="What's on your mind?">${bodyVal}</textarea>
+
+        <div class="form-buttons">
+          <button class="btn" ${saveAttr} ${saveDisabled}>SAVE</button>
+          <button class="btn danger" ${cancelAttr}>CANCEL</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireNotes() {
+  const resetConfirm = () => {
+    confirmingFolderDeleteId = null;
+    confirmingNoteDeleteId = null;
+  };
+
+  // ----- ADD FOLDER -----
+  const addFolderBtn = document.getElementById("add-folder");
+  if (addFolderBtn) {
+    addFolderBtn.addEventListener("click", () => {
+      resetConfirm();
+      addingFolder = true;
+      editingFolderId = null;
+      renderNotes();
+      const input = document.getElementById("new-folder-name");
+      if (input) input.focus();
+    });
+  }
+
+  wireFormControls({
+    nameSel: "#new-folder-name",
+    saveSel: "#folder-save",
+    cancelSel: "#folder-cancel",
+    onSave: () => {
+      const name = (document.getElementById("new-folder-name").value || "").trim();
+      if (!name) return;
+      character.notes.folders = character.notes.folders || [];
+      character.notes.folders.push({
+        id: "f" + Date.now() + Math.random().toString(36).slice(2, 7),
+        name,
+      });
+      saveCharacter();
+      addingFolder = false;
+      renderNotes();
+    },
+    onCancel: () => { addingFolder = false; renderNotes(); },
+  });
+
+  // ----- RENAME FOLDER -----
+  document.querySelectorAll("[data-rename-folder]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingFolderId = btn.dataset.renameFolder;
+      addingFolder = false;
+      renderNotes();
+      const input = document.querySelector(`[data-edit-folder-name="${editingFolderId}"]`);
+      if (input) { input.focus(); input.select(); }
+    });
+  });
+
+  document.querySelectorAll("[data-save-folder]").forEach(btn => {
+    const id = btn.dataset.saveFolder;
+    wireFormControls({
+      nameSel: `[data-edit-folder-name="${id}"]`,
+      saveSel: `[data-save-folder="${id}"]`,
+      cancelSel: `[data-cancel-folder="${id}"]`,
+      onSave: () => {
+        const folder = character.notes.folders.find(f => f.id === id);
+        if (!folder) return;
+        const name = (document.querySelector(`[data-edit-folder-name="${id}"]`).value || "").trim();
+        if (!name) return;
+        folder.name = name;
+        saveCharacter();
+        editingFolderId = null;
+        renderNotes();
+      },
+      onCancel: () => { editingFolderId = null; renderNotes(); },
+    });
+  });
+
+  // ----- ENTER FOLDER -----
+  document.querySelectorAll("[data-enter-folder]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      selectedFolderId = el.dataset.enterFolder;
+      renderNotes();
+    });
+  });
+
+  // ----- DELETE FOLDER (cascades to its notes) -----
+  document.querySelectorAll("[data-delete-folder]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deleteFolder;
+      if (confirmingFolderDeleteId === id) {
+        character.notes.folders = (character.notes.folders || []).filter(f => f.id !== id);
+        character.notes.items = (character.notes.items || []).filter(n => n.folderId !== id);
+        saveCharacter();
+        confirmingFolderDeleteId = null;
+        renderNotes();
+      } else {
+        confirmingFolderDeleteId = id;
+        confirmingNoteDeleteId = null;
+        renderNotes();
+      }
+    });
+  });
+
+  // ----- BACK TO FOLDERS -----
+  const backBtn = document.getElementById("back-to-folders");
+  if (backBtn) {
+    backBtn.addEventListener("click", () => {
+      resetConfirm();
+      selectedFolderId = null;
+      addingNote = false;
+      editingNoteId = null;
+      expandedNoteId = null;
+      renderNotes();
+    });
+  }
+
+  // ----- ADD NOTE -----
+  const addNoteBtn = document.getElementById("add-note");
+  if (addNoteBtn) {
+    addNoteBtn.addEventListener("click", () => {
+      resetConfirm();
+      addingNote = true;
+      editingNoteId = null;
+      renderNotes();
+      const input = document.getElementById("add-note-title");
+      if (input) input.focus();
+    });
+  }
+
+  wireFormControls({
+    nameSel: "#add-note-title",
+    saveSel: "#add-note-save",
+    cancelSel: "#add-note-cancel",
+    onSave: () => {
+      const title = (document.getElementById("add-note-title").value || "").trim();
+      if (!title) return;
+      const body = (document.getElementById("add-note-body").value || "").trim();
+      character.notes.items = character.notes.items || [];
+      character.notes.items.push({
+        id: "n" + Date.now() + Math.random().toString(36).slice(2, 7),
+        folderId: selectedFolderId,
+        title, body,
+      });
+      saveCharacter();
+      addingNote = false;
+      renderNotes();
+    },
+    onCancel: () => { addingNote = false; renderNotes(); },
+  });
+
+  // ----- EDIT NOTE -----
+  document.querySelectorAll("[data-edit-note]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingNoteId = btn.dataset.editNote;
+      addingNote = false;
+      renderNotes();
+      const input = document.querySelector(`[data-edit-note-title="${editingNoteId}"]`);
+      if (input) { input.focus(); input.select(); }
+    });
+  });
+
+  document.querySelectorAll("[data-save-note]").forEach(btn => {
+    const id = btn.dataset.saveNote;
+    wireFormControls({
+      nameSel: `[data-edit-note-title="${id}"]`,
+      saveSel: `[data-save-note="${id}"]`,
+      cancelSel: `[data-cancel-note="${id}"]`,
+      onSave: () => {
+        const note = character.notes.items.find(n => n.id === id);
+        if (!note) return;
+        const title = (document.querySelector(`[data-edit-note-title="${id}"]`).value || "").trim();
+        if (!title) return;
+        note.title = title;
+        note.body = (document.querySelector(`[data-edit-note-body="${id}"]`).value || "").trim();
+        saveCharacter();
+        editingNoteId = null;
+        renderNotes();
+      },
+      onCancel: () => { editingNoteId = null; renderNotes(); },
+    });
+  });
+
+  // ----- EXPAND NOTE -----
+  document.querySelectorAll("[data-toggle-note-expand]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      const id = el.dataset.toggleNoteExpand;
+      expandedNoteId = expandedNoteId === id ? null : id;
+      renderNotes();
+    });
+  });
+
+  // ----- DELETE NOTE -----
+  document.querySelectorAll("[data-delete-note]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deleteNote;
+      if (confirmingNoteDeleteId === id) {
+        character.notes.items = (character.notes.items || []).filter(n => n.id !== id);
+        saveCharacter();
+        confirmingNoteDeleteId = null;
+        if (expandedNoteId === id) expandedNoteId = null;
+        if (editingNoteId === id) editingNoteId = null;
+        renderNotes();
+      } else {
+        confirmingNoteDeleteId = id;
+        confirmingFolderDeleteId = null;
+        renderNotes();
+      }
+    });
+  });
 }
 
 // ============================================================
