@@ -51,8 +51,7 @@ if "%ISCC%"=="" (
 
 echo.
 echo === Bundling Python app (PyInstaller) ===
-REM TODO: add --icon app.ico once a real icon exists
-python -m PyInstaller --noconfirm --windowed --name KizunaTablet --add-data "web;web" app.py
+python -m PyInstaller --noconfirm --windowed --name KizunaTablet --icon app.ico --add-data "web;web" app.py
 if errorlevel 1 (
     echo ERROR: PyInstaller failed.
     exit /b 1
