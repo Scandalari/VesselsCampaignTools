@@ -154,6 +154,17 @@ let addingAlly = false;
 let editingAllyId = null;
 let confirmingAllyDeleteId = null;
 
+// Loot UI state. lootResults === null means "no roll yet"; an empty array
+// means the roll happened but the category had no items.
+let lootCategory = "consumable";
+let lootCount = 15;
+let lootResults = null;
+
+const LOOT_CATEGORIES = [
+  "consumable", "weapon", "armor", "wondrous",
+  "ammo", "gear", "tools", "gem", "art",
+];
+
 // ============================================================
 // INIT
 // ============================================================
@@ -171,6 +182,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderInventory();
   renderNotes();
   renderParty();
+  renderLoot();
 });
 
 window.addEventListener("pywebviewready", async () => {
@@ -185,6 +197,7 @@ window.addEventListener("pywebviewready", async () => {
   renderInventory();
   renderNotes();
   renderParty();
+  renderLoot();
 });
 
 function createDefaultDmData() {
@@ -2450,6 +2463,110 @@ function readCharacterForm() {
   c.description = (get('textarea[data-cf="description"]')?.value || "").trim();
   c.personality = (get('textarea[data-cf="personality"]')?.value || "").trim();
   return c;
+}
+
+// ============================================================
+// LOOT (DM mode — random item roller from items.js)
+// ============================================================
+
+function renderLoot() {
+  const container = document.getElementById("loot");
+  if (!container) return;
+
+  const optionsHtml = LOOT_CATEGORIES.map(cat =>
+    `<option value="${cat}" ${cat === lootCategory ? "selected" : ""}>${titleCase(cat)}</option>`
+  ).join("");
+
+  let resultsHtml;
+  if (lootResults === null) {
+    resultsHtml = `<div class="loot-empty">Pick a category and click ROLL to generate items.</div>`;
+  } else if (lootResults.length === 0) {
+    resultsHtml = `<div class="loot-empty">No items in this category.</div>`;
+  } else {
+    resultsHtml = `<div class="loot-results-grid">${lootResults.map(item => `
+      <div class="loot-card">
+        <div class="loot-name">${escapeHtml(item.name)}</div>
+        <div class="loot-rarity ${item.rarity}">${formatRarity(item.rarity)}</div>
+        <div class="loot-price">${item.rolledPrice} cr</div>
+      </div>
+    `).join("")}</div>`;
+  }
+
+  container.innerHTML = `
+    <div class="notes-header">
+      <div></div>
+      <div class="notes-title">LOOT</div>
+      <div></div>
+    </div>
+    <div class="loot-controls">
+      <div class="loot-control">
+        <label class="form-label">Category</label>
+        <select id="loot-category">${optionsHtml}</select>
+      </div>
+      <div class="loot-control">
+        <label class="form-label">Count</label>
+        <input type="number" id="loot-count" min="1" max="100" value="${lootCount}" />
+      </div>
+      <div class="loot-control loot-control-buttons">
+        <button class="btn" id="loot-roll">${lootResults === null ? "ROLL" : "REROLL"}</button>
+        ${lootResults !== null ? '<button class="btn danger" id="loot-clear">CLEAR</button>' : ""}
+      </div>
+    </div>
+    ${resultsHtml}
+  `;
+  wireLoot();
+}
+
+function wireLoot() {
+  const cat = document.getElementById("loot-category");
+  if (cat) cat.addEventListener("change", e => { lootCategory = e.target.value; });
+
+  const count = document.getElementById("loot-count");
+  if (count) count.addEventListener("input", e => {
+    lootCount = clamp(Number(e.target.value) || 1, 1, 100);
+  });
+
+  const roll = document.getElementById("loot-roll");
+  if (roll) roll.addEventListener("click", () => {
+    lootResults = rollLoot();
+    renderLoot();
+  });
+
+  const clear = document.getElementById("loot-clear");
+  if (clear) clear.addEventListener("click", () => {
+    lootResults = null;
+    renderLoot();
+  });
+}
+
+// Pick N items at random from the chosen category, with replacement (so
+// duplicates can show up — same as the PWA). Each item gets a fresh price
+// rolled at 75–100% of its base value.
+function rollLoot() {
+  if (typeof items === "undefined" || !Array.isArray(items)) return [];
+  const pool = items.filter(i => i.category === lootCategory);
+  if (pool.length === 0) return [];
+  const result = [];
+  for (let i = 0; i < lootCount; i++) {
+    const item = pool[Math.floor(Math.random() * pool.length)];
+    const rolledPrice = item.price * (0.75 + Math.random() * 0.25);
+    result.push({
+      name: item.name,
+      rarity: item.rarity,
+      rolledPrice: Math.round(rolledPrice),
+    });
+  }
+  return result;
+}
+
+function formatRarity(r) {
+  if (r === "veryRare") return "Very Rare";
+  return titleCase(r || "");
+}
+
+function titleCase(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // ============================================================
