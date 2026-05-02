@@ -1,5 +1,7 @@
+import base64
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -12,13 +14,50 @@ import webview
 
 # Source of truth for app version. installer.iss MyAppVersion must match
 # before each release build (build.bat handles the bump for both).
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 GITHUB_REPO = "Scandalari/VesselsCampaignTools"
 
 WEB_DIR = Path(__file__).parent / "web"
 APP_DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "KizunaTablet"
 SETTINGS_PATH = APP_DATA_DIR / "settings.json"
+CHARACTER_PATH = APP_DATA_DIR / "character.json"
+PORTRAITS_DIR = APP_DATA_DIR / "portraits"
 DEFAULT_SETTINGS = {"mode": "player"}
+
+DEFAULT_CHARACTER = {
+    "name": "",
+    "origin": "",
+    "class": "",
+    "subclass": "",
+    "level": 1,
+    "icon_filename": None,
+    "abilities": {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+    "saves_proficient": [],
+    "skills": {
+        "Acrobatics": "none", "Animal Handling": "none", "Arcana": "none",
+        "Athletics": "none", "Deception": "none", "History": "none",
+        "Insight": "none", "Intimidation": "none", "Investigation": "none",
+        "Medicine": "none", "Nature": "none", "Perception": "none",
+        "Performance": "none", "Persuasion": "none", "Religion": "none",
+        "Sleight of Hand": "none", "Stealth": "none", "Survival": "none",
+    },
+    "speed": 30,
+    "armor": {
+        "type": "unarmored",
+        "base_ac": 10,
+        "shield": False,
+        "misc_bonus": 0,
+    },
+    "hp": {"current": 8, "max": 8, "temp": 0},
+    "spell_slots": {},
+    "pact_slots": None,
+    "actions": [],
+    "action_economy": {
+        "Action": True, "Bonus": True, "Reaction": True,
+        "Movement": True, "Object": True,
+    },
+    "proficiencies": {"armor": "", "weapons": "", "tools": "", "languages": ""},
+}
 
 WINDOW_TITLE = "Kizuna Tablet"
 
@@ -57,6 +96,58 @@ def _save_settings(settings):
         return False
 
 
+def _deep_copy(obj):
+    return json.loads(json.dumps(obj))
+
+
+def _merge_character(data):
+    """Merge loaded data over a fresh DEFAULT_CHARACTER copy so future-added
+    keys don't break loading of old saves. One level deep — sub-dicts get
+    .update()'d, lists/scalars are replaced wholesale."""
+    base = _deep_copy(DEFAULT_CHARACTER)
+    for key, value in data.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            base[key].update(value)
+        else:
+            base[key] = value
+    return base
+
+
+def _load_character():
+    try:
+        with open(CHARACTER_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return _deep_copy(DEFAULT_CHARACTER)
+    if not isinstance(data, dict):
+        return _deep_copy(DEFAULT_CHARACTER)
+    return _merge_character(data)
+
+
+def _save_character(char):
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(CHARACTER_PATH, "w", encoding="utf-8") as f:
+            json.dump(char, f, indent=2)
+        return True
+    except OSError:
+        return False
+
+
+def _portrait_to_base64(filename):
+    if not filename:
+        return None
+    path = PORTRAITS_DIR / filename
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except (FileNotFoundError, OSError):
+        return None
+    ext = path.suffix.lower().lstrip(".")
+    mime = "jpeg" if ext == "jpg" else ext
+    return f"data:image/{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 class JsApi:
     """Methods exposed to the web UI via window.pywebview.api.<name>()."""
 
@@ -72,6 +163,57 @@ class JsApi:
         merged = dict(DEFAULT_SETTINGS)
         merged.update(settings)
         return {"ok": _save_settings(merged)}
+
+    def get_character(self):
+        return _load_character()
+
+    def save_character(self, char):
+        if not isinstance(char, dict):
+            return {"ok": False}
+        return {"ok": _save_character(char)}
+
+    def get_portrait_data(self, filename):
+        return _portrait_to_base64(filename)
+
+    def pick_portrait(self):
+        """Native file dialog → copy chosen image into PORTRAITS_DIR → return
+        the new filename + base64 data URL. Filename is always portrait.<ext>
+        so old uploads get overwritten (one portrait per character)."""
+        PORTRAITS_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            result = webview.windows[0].create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("Image files (*.png;*.jpg;*.jpeg;*.gif;*.webp)",),
+            )
+        except Exception:
+            return {"ok": False, "error": "File dialog failed."}
+        if not result:
+            return {"ok": False, "error": "Cancelled."}
+        src = Path(result[0] if isinstance(result, (list, tuple)) else result)
+        if not src.exists():
+            return {"ok": False, "error": "File not found."}
+        ext = src.suffix.lower()
+        if ext not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+            return {"ok": False, "error": "Unsupported image format."}
+        dest = PORTRAITS_DIR / f"portrait{ext}"
+        # Wipe any other-extension portrait that might be lingering so we don't
+        # end up with both portrait.png and portrait.jpg.
+        for existing in PORTRAITS_DIR.glob("portrait.*"):
+            if existing != dest:
+                try:
+                    existing.unlink()
+                except OSError:
+                    pass
+        try:
+            shutil.copyfile(src, dest)
+        except OSError:
+            return {"ok": False, "error": "Couldn't copy file."}
+        return {
+            "ok": True,
+            "filename": dest.name,
+            "data_url": _portrait_to_base64(dest.name),
+        }
 
     def check_for_update(self):
         payload = {

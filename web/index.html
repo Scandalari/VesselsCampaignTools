@@ -22,15 +22,13 @@
   </header>
 
   <main class="stage">
-    <!-- shared across both modes -->
     <section class="view active" data-view="dashboard">
-      <div class="empty">
-        <h1>SYSTEM ONLINE</h1>
-        <p class="subtle">Awaiting transmission.</p>
+      <div class="dashboard" id="dashboard">
+        <!-- rendered by app.js — view mode vs config mode -->
       </div>
     </section>
 
-    <!-- PLAYER views -->
+    <!-- PLAYER views (placeholders for now) -->
     <section class="view" data-view="inventory">
       <div class="empty">
         <h1>INVENTORY</h1>
@@ -50,7 +48,7 @@
       </div>
     </section>
 
-    <!-- DM views -->
+    <!-- DM views (placeholders for now) -->
     <section class="view" data-view="party">
       <div class="empty">
         <h1>PARTY</h1>
@@ -70,7 +68,6 @@
       </div>
     </section>
 
-    <!-- always available via the SETTINGS button in the corner -->
     <section class="view" data-view="settings">
       <div class="settings-panel">
         <h1>SETTINGS</h1>
