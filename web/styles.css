@@ -1357,3 +1357,56 @@ html, body {
   gap: 8px;
 }
 .detail-form-grid-3 .detail-form-row input { text-align: center; }
+
+/* --- ally pills (on character cards) --- */
+.ally-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0 8px;
+}
+.ally-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #ff2a8a;
+  background: rgba(255, 42, 138, 0.08);
+  border: 1px solid rgba(255, 42, 138, 0.5);
+}
+
+/* --- ally rows (in character detail's ATTACHED ALLIES panel) --- */
+.ally-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ally-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid #14141f;
+  font-size: 12px;
+}
+.ally-row:hover { border-color: rgba(255, 42, 138, 0.4); }
+.ally-name {
+  color: #e6e0f0;
+  font-weight: 600;
+}
+.ally-stats {
+  font-family: "Consolas", monospace;
+  font-size: 11px;
+  color: #8a7a9a;
+  letter-spacing: 0.04em;
+}
+
+/* --- ally form (inline in ATTACHED ALLIES panel) --- */
+.ally-form {
+  border: 1px solid #ff2a8a;
+  background: rgba(255, 42, 138, 0.04);
+  padding: 10px;
+  margin-bottom: 10px;
+}

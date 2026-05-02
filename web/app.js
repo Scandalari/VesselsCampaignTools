@@ -140,19 +140,19 @@ let editingNoteId = null;
 let expandedNoteId = null;
 let confirmingNoteDeleteId = null;
 
-// Party (DM mode) state. 3-level nav:
-//   selectedPartyFolderId === null                    → folder grid
-//   selectedPartyFolderId set, selectedCharacterId null → character grid in folder
-//   selectedCharacterId set                            → character detail (view or edit)
+// Party (DM mode) state. 2-level nav (no folders):
+//   selectedCharacterId === null → character grid (root)
+//   selectedCharacterId set      → character detail (view or edit)
+// Allies are sub-entities attached to a character via characterId; managed
+// inside the character detail view's ATTACHED ALLIES panel.
 let dmData = null;
-let selectedPartyFolderId = null;
 let selectedCharacterId = null;
 let editingCharacter = false;
-let addingPartyFolder = false;
-let editingPartyFolderId = null;
-let confirmingPartyFolderDeleteId = null;
 let addingCharacter = false;
 let confirmingCharacterDeleteId = null;
+let addingAlly = false;
+let editingAllyId = null;
+let confirmingAllyDeleteId = null;
 
 // ============================================================
 // INIT
@@ -188,7 +188,19 @@ window.addEventListener("pywebviewready", async () => {
 });
 
 function createDefaultDmData() {
-  return { party: { folders: [], characters: [] } };
+  return { party: { characters: [], allies: [] } };
+}
+
+function createDefaultAlly(characterId) {
+  return {
+    id: "a" + Date.now() + Math.random().toString(36).slice(2, 7),
+    characterId,
+    name: "",
+    initiativeMod: 0,
+    hp_max: 10,
+    ac: 10,
+    notes: "",
+  };
 }
 
 async function loadDmData() {
@@ -198,10 +210,13 @@ async function loadDmData() {
   } catch (e) {}
   if (!dmData) dmData = createDefaultDmData();
   if (!dmData.party || typeof dmData.party !== "object") {
-    dmData.party = { folders: [], characters: [] };
+    dmData.party = { characters: [], allies: [] };
   }
-  if (!Array.isArray(dmData.party.folders)) dmData.party.folders = [];
   if (!Array.isArray(dmData.party.characters)) dmData.party.characters = [];
+  if (!Array.isArray(dmData.party.allies)) dmData.party.allies = [];
+  // v1.0.7 → v1.0.8: dropped folders. Strip stale data to keep dm.json clean.
+  if (dmData.party.folders) delete dmData.party.folders;
+  dmData.party.characters.forEach(c => { if (c.folderId !== undefined) delete c.folderId; });
 }
 
 async function saveDmData() {
@@ -211,7 +226,6 @@ async function saveDmData() {
 function createDefaultPartyCharacter() {
   return {
     id: "c" + Date.now() + Math.random().toString(36).slice(2, 7),
-    folderId: null,
     name: "",
     class: "",
     level: 1,
@@ -1908,7 +1922,7 @@ function wireNotes() {
 }
 
 // ============================================================
-// PARTY (DM mode — folders → character grid → character detail)
+// PARTY (DM mode — flat character grid → character detail w/ allies)
 // ============================================================
 
 function renderParty() {
@@ -1916,98 +1930,29 @@ function renderParty() {
   if (!container) return;
 
   // Validate state — clear stale references if data was deleted out from under us.
-  const folders = dmData.party.folders;
   const chars = dmData.party.characters;
-  if (selectedPartyFolderId && !folders.find(f => f.id === selectedPartyFolderId)) {
-    selectedPartyFolderId = null;
-    selectedCharacterId = null;
-  }
   if (selectedCharacterId && !chars.find(c => c.id === selectedCharacterId)) {
     selectedCharacterId = null;
   }
 
   if (selectedCharacterId) {
     container.innerHTML = renderCharacterDetailView();
-  } else if (selectedPartyFolderId) {
-    container.innerHTML = renderCharacterGridView();
   } else {
-    container.innerHTML = renderPartyFolderGrid();
+    container.innerHTML = renderCharacterGridView();
   }
   wireParty();
 }
 
-// ----- LEVEL 1: folder grid -----
-function renderPartyFolderGrid() {
-  const folders = dmData.party.folders;
-  let body;
-  if (folders.length === 0 && !addingPartyFolder) {
-    body = `<div class="notes-empty">No party folders yet. Create one to start (e.g. "Players", "Allies", "Recurring NPCs").</div>`;
-  } else {
-    body = `<div class="notes-folders-grid">${folders.map(f => renderPartyFolderCard(f)).join("")}</div>`;
-  }
-  const addBtn = addingPartyFolder
-    ? `<div></div>`
-    : `<button class="btn" id="add-party-folder">+ NEW FOLDER</button>`;
-  return `
-    <div class="notes-header">
-      <div></div>
-      <div class="notes-title">PARTY</div>
-      ${addBtn}
-    </div>
-    ${addingPartyFolder ? renderPartyFolderForm(null) : ""}
-    ${body}
-  `;
+function alliesFor(characterId) {
+  return (dmData.party.allies || []).filter(a => a.characterId === characterId);
 }
 
-function renderPartyFolderCard(folder) {
-  if (editingPartyFolderId === folder.id) return renderPartyFolderForm(folder);
-  const count = dmData.party.characters.filter(c => c.folderId === folder.id).length;
-  const isConfirming = confirmingPartyFolderDeleteId === folder.id;
-  const deleteBtn = isConfirming
-    ? `<button class="item-delete confirming" data-delete-party-folder="${folder.id}">SURE?</button>`
-    : `<button class="item-delete" data-delete-party-folder="${folder.id}">×</button>`;
-  return `
-    <div class="folder-card">
-      <div class="folder-card-name clickable" data-enter-party-folder="${folder.id}">${escapeHtml(folder.name)}</div>
-      <div class="folder-card-count">${count} ${count === 1 ? "character" : "characters"}</div>
-      <div class="folder-card-actions">
-        <button class="item-edit" data-rename-party-folder="${folder.id}">RENAME</button>
-        ${deleteBtn}
-      </div>
-    </div>
-  `;
-}
-
-function renderPartyFolderForm(folder) {
-  const isEdit = !!folder;
-  const nameVal = isEdit ? escapeHtml(folder.name) : "";
-  const ns = isEdit ? `data-edit-party-folder-name="${folder.id}"` : `id="new-party-folder-name"`;
-  const saveAttr = isEdit ? `data-save-party-folder="${folder.id}"` : `id="party-folder-save"`;
-  const cancelAttr = isEdit ? `data-cancel-party-folder="${folder.id}"` : `id="party-folder-cancel"`;
-  const saveDisabled = isEdit ? "" : "disabled";
-  const wrapClass = isEdit ? "folder-card editing" : "folder-form";
-  return `
-    <div class="${wrapClass}">
-      <div class="item-form">
-        <label class="form-label">Folder Name <span class="required">*</span></label>
-        <input type="text" ${ns} value="${nameVal}" placeholder="Folder name" />
-        <div class="form-buttons">
-          <button class="btn" ${saveAttr} ${saveDisabled}>SAVE</button>
-          <button class="btn danger" ${cancelAttr}>CANCEL</button>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-// ----- LEVEL 2: character grid in folder -----
+// ----- LEVEL 1: flat character grid (no folders) -----
 function renderCharacterGridView() {
-  const folder = dmData.party.folders.find(f => f.id === selectedPartyFolderId);
-  if (!folder) return "";
-  const chars = dmData.party.characters.filter(c => c.folderId === selectedPartyFolderId);
+  const chars = dmData.party.characters || [];
   let body;
   if (chars.length === 0 && !addingCharacter) {
-    body = `<div class="notes-empty">No characters in this folder. Click "+ NEW CHARACTER" to add one.</div>`;
+    body = `<div class="notes-empty">No characters yet. Click "+ NEW CHARACTER" to add your first player.</div>`;
   } else {
     body = `<div class="character-grid">${chars.map(c => renderCharacterCard(c)).join("")}</div>`;
   }
@@ -2016,8 +1961,8 @@ function renderCharacterGridView() {
     : `<button class="btn" id="add-character">+ NEW CHARACTER</button>`;
   return `
     <div class="notes-header">
-      <button class="btn back-btn" id="back-to-party-folders">FOLDERS</button>
-      <div class="notes-title">${escapeHtml(folder.name)}</div>
+      <div></div>
+      <div class="notes-title">PARTY</div>
       ${addBtn}
     </div>
     ${addingCharacter ? renderCharacterForm(createDefaultPartyCharacter(), true) : ""}
@@ -2031,10 +1976,15 @@ function renderCharacterCard(c) {
     ? `<button class="item-delete confirming" data-delete-character="${c.id}">SURE?</button>`
     : `<button class="item-delete" data-delete-character="${c.id}">×</button>`;
   const meta = [c.class, c.level ? "Lv " + c.level : ""].filter(Boolean).join(" · ");
+  const allies = alliesFor(c.id);
+  const alliesHtml = allies.length > 0
+    ? `<div class="ally-pills">${allies.map(a => `<span class="ally-pill">${escapeHtml(a.name)}</span>`).join("")}</div>`
+    : "";
   return `
     <div class="character-card">
       <div class="character-card-name clickable" data-open-character="${c.id}">${escapeHtml(c.name) || "<span class='placeholder'>(unnamed)</span>"}</div>
       <div class="character-card-meta">${escapeHtml(meta) || "&nbsp;"}</div>
+      ${alliesHtml}
       <div class="folder-card-actions">
         <button class="item-edit" data-open-character="${c.id}">VIEW</button>
         ${deleteBtn}
@@ -2052,12 +2002,12 @@ function renderCharacterDetailView() {
 }
 
 function renderCharacterDetailRead(c) {
-  const folder = dmData.party.folders.find(f => f.id === c.folderId);
   const meta = [c.class, c.level ? "Lv " + c.level : ""].filter(Boolean).join(" · ");
+  const allies = alliesFor(c.id);
   return `
     <div class="character-detail">
       <div class="detail-header">
-        <button class="btn back-btn" id="back-to-character-grid">${escapeHtml(folder ? folder.name : "BACK")}</button>
+        <button class="btn back-btn" id="back-to-character-grid">PARTY</button>
         <div class="detail-title-block">
           <div class="detail-name">${escapeHtml(c.name) || "(unnamed)"}</div>
           <div class="detail-meta">${escapeHtml(meta)}</div>
@@ -2091,6 +2041,15 @@ function renderCharacterDetailRead(c) {
         </div>
 
         <div class="panel">
+          <div class="panel-header">ATTACHED ALLIES</div>
+          ${addingAlly ? renderAllyForm(null, c.id) : ""}
+          ${allies.length === 0 && !addingAlly
+            ? '<div class="detail-text empty">No allies attached. Click "+ NEW ALLY" to add one.</div>'
+            : `<div class="ally-list">${allies.map(a => editingAllyId === a.id ? renderAllyForm(a, c.id) : renderAllyRow(a)).join("")}</div>`}
+          ${!addingAlly ? `<button class="btn" id="add-ally" style="margin-top:10px;">+ NEW ALLY</button>` : ""}
+        </div>
+
+        <div class="panel">
           <div class="panel-header">FEATURES &amp; TRAITS</div>
           <div class="detail-text ${c.features ? "" : "empty"}">${c.features ? escapeHtml(c.features) : "(none)"}</div>
         </div>
@@ -2104,6 +2063,61 @@ function renderCharacterDetailRead(c) {
           <div class="panel-header">PERSONALITY</div>
           <div class="detail-text ${c.personality ? "" : "empty"}">${c.personality ? escapeHtml(c.personality) : "(none)"}</div>
         </div>
+      </div>
+    </div>
+  `;
+}
+
+// Compact row for an attached ally inside the character detail view.
+function renderAllyRow(a) {
+  const isConfirming = confirmingAllyDeleteId === a.id;
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-delete-ally="${a.id}">SURE?</button>`
+    : `<button class="item-delete" data-delete-ally="${a.id}">×</button>`;
+  return `
+    <div class="ally-row">
+      <div class="ally-name">${escapeHtml(a.name)}</div>
+      <div class="ally-stats">init ${fmtMod(Number(a.initiativeMod) || 0)} · HP ${a.hp_max} · AC ${a.ac}</div>
+      <button class="item-edit" data-edit-ally="${a.id}">EDIT</button>
+      ${deleteBtn}
+    </div>
+  `;
+}
+
+// Inline ally form. Used for both adding (ally=null) and editing (ally=existing).
+function renderAllyForm(ally, characterId) {
+  const isEdit = !!ally;
+  const a = ally || createDefaultAlly(characterId);
+  const ns = isEdit ? `data-af-name="${a.id}"` : `id="new-ally-name"`;
+  const init = isEdit ? `data-af-init="${a.id}"` : `id="new-ally-init"`;
+  const hp   = isEdit ? `data-af-hp="${a.id}"`   : `id="new-ally-hp"`;
+  const ac   = isEdit ? `data-af-ac="${a.id}"`   : `id="new-ally-ac"`;
+  const saveAttr = isEdit ? `data-save-ally="${a.id}"` : `id="save-new-ally"`;
+  const cancelAttr = isEdit ? `data-cancel-ally="${a.id}"` : `id="cancel-new-ally"`;
+  const saveDisabled = isEdit ? "" : "disabled";
+  return `
+    <div class="ally-form">
+      <div class="detail-form-row">
+        <label class="form-label">Name <span class="required">*</span></label>
+        <input type="text" ${ns} value="${escapeHtml(a.name)}" placeholder="Beast, Familiar, Steel Defender, ..." />
+      </div>
+      <div class="detail-form-grid-3">
+        <div class="detail-form-row">
+          <label class="form-label">Init Mod</label>
+          <input type="number" ${init} value="${a.initiativeMod}" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">HP Max</label>
+          <input type="number" min="1" ${hp} value="${a.hp_max}" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">AC</label>
+          <input type="number" min="0" ${ac} value="${a.ac}" />
+        </div>
+      </div>
+      <div class="form-buttons">
+        <button class="btn" ${saveAttr} ${saveDisabled}>SAVE</button>
+        <button class="btn danger" ${cancelAttr}>CANCEL</button>
       </div>
     </div>
   `;
@@ -2215,105 +2229,9 @@ function renderCharacterForm(c, isNew) {
 
 function wireParty() {
   const resetConfirm = () => {
-    confirmingPartyFolderDeleteId = null;
     confirmingCharacterDeleteId = null;
+    confirmingAllyDeleteId = null;
   };
-
-  // ----- folder add -----
-  const addFolderBtn = document.getElementById("add-party-folder");
-  if (addFolderBtn) {
-    addFolderBtn.addEventListener("click", () => {
-      resetConfirm();
-      addingPartyFolder = true;
-      editingPartyFolderId = null;
-      renderParty();
-      const inp = document.getElementById("new-party-folder-name");
-      if (inp) inp.focus();
-    });
-  }
-  wireFormControls({
-    nameSel: "#new-party-folder-name",
-    saveSel: "#party-folder-save",
-    cancelSel: "#party-folder-cancel",
-    onSave: () => {
-      const name = (document.getElementById("new-party-folder-name").value || "").trim();
-      if (!name) return;
-      dmData.party.folders.push({ id: "pf" + Date.now() + Math.random().toString(36).slice(2,7), name });
-      saveDmData();
-      addingPartyFolder = false;
-      renderParty();
-    },
-    onCancel: () => { addingPartyFolder = false; renderParty(); },
-  });
-
-  // ----- folder rename -----
-  document.querySelectorAll("[data-rename-party-folder]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      resetConfirm();
-      editingPartyFolderId = btn.dataset.renamePartyFolder;
-      addingPartyFolder = false;
-      renderParty();
-      const inp = document.querySelector(`[data-edit-party-folder-name="${editingPartyFolderId}"]`);
-      if (inp) { inp.focus(); inp.select(); }
-    });
-  });
-  document.querySelectorAll("[data-save-party-folder]").forEach(btn => {
-    const id = btn.dataset.savePartyFolder;
-    wireFormControls({
-      nameSel: `[data-edit-party-folder-name="${id}"]`,
-      saveSel: `[data-save-party-folder="${id}"]`,
-      cancelSel: `[data-cancel-party-folder="${id}"]`,
-      onSave: () => {
-        const folder = dmData.party.folders.find(f => f.id === id);
-        if (!folder) return;
-        const name = (document.querySelector(`[data-edit-party-folder-name="${id}"]`).value || "").trim();
-        if (!name) return;
-        folder.name = name;
-        saveDmData();
-        editingPartyFolderId = null;
-        renderParty();
-      },
-      onCancel: () => { editingPartyFolderId = null; renderParty(); },
-    });
-  });
-
-  // ----- folder enter -----
-  document.querySelectorAll("[data-enter-party-folder]").forEach(el => {
-    el.addEventListener("click", () => {
-      resetConfirm();
-      selectedPartyFolderId = el.dataset.enterPartyFolder;
-      renderParty();
-    });
-  });
-
-  // ----- folder delete (cascades to characters) -----
-  document.querySelectorAll("[data-delete-party-folder]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const id = btn.dataset.deletePartyFolder;
-      if (confirmingPartyFolderDeleteId === id) {
-        dmData.party.folders = dmData.party.folders.filter(f => f.id !== id);
-        dmData.party.characters = dmData.party.characters.filter(c => c.folderId !== id);
-        saveDmData();
-        confirmingPartyFolderDeleteId = null;
-        renderParty();
-      } else {
-        confirmingPartyFolderDeleteId = id;
-        confirmingCharacterDeleteId = null;
-        renderParty();
-      }
-    });
-  });
-
-  // ----- back to party folders -----
-  const backFolders = document.getElementById("back-to-party-folders");
-  if (backFolders) {
-    backFolders.addEventListener("click", () => {
-      resetConfirm();
-      selectedPartyFolderId = null;
-      addingCharacter = false;
-      renderParty();
-    });
-  }
 
   // ----- character add -----
   const addCharBtn = document.getElementById("add-character");
@@ -2332,7 +2250,6 @@ function wireParty() {
     saveNewBtn.addEventListener("click", () => {
       const c = readCharacterForm();
       if (!c.name) return;
-      c.folderId = selectedPartyFolderId;
       dmData.party.characters.push(c);
       saveDmData();
       addingCharacter = false;
@@ -2353,23 +2270,26 @@ function wireParty() {
       resetConfirm();
       selectedCharacterId = el.dataset.openCharacter;
       editingCharacter = false;
+      addingAlly = false;
+      editingAllyId = null;
       renderParty();
     });
   });
 
-  // ----- character delete (from grid) -----
+  // ----- character delete (cascades to its allies) -----
   document.querySelectorAll("[data-delete-character]").forEach(btn => {
     btn.addEventListener("click", () => {
       const id = btn.dataset.deleteCharacter;
       if (confirmingCharacterDeleteId === id) {
         dmData.party.characters = dmData.party.characters.filter(c => c.id !== id);
+        dmData.party.allies = (dmData.party.allies || []).filter(a => a.characterId !== id);
         saveDmData();
         confirmingCharacterDeleteId = null;
         if (selectedCharacterId === id) selectedCharacterId = null;
         renderParty();
       } else {
         confirmingCharacterDeleteId = id;
-        confirmingPartyFolderDeleteId = null;
+        confirmingAllyDeleteId = null;
         renderParty();
       }
     });
@@ -2382,6 +2302,8 @@ function wireParty() {
       resetConfirm();
       selectedCharacterId = null;
       editingCharacter = false;
+      addingAlly = false;
+      editingAllyId = null;
       renderParty();
     });
   }
@@ -2391,6 +2313,8 @@ function wireParty() {
   if (editBtn) {
     editBtn.addEventListener("click", () => {
       editingCharacter = true;
+      addingAlly = false;
+      editingAllyId = null;
       renderParty();
       const inp = document.querySelector('input[data-cf="name"]');
       if (inp) { inp.focus(); inp.select(); }
@@ -2404,9 +2328,7 @@ function wireParty() {
       if (!c) return;
       const updated = readCharacterForm();
       if (!updated.name) return;
-      // Preserve id and folderId — form doesn't expose them.
       updated.id = c.id;
-      updated.folderId = c.folderId;
       Object.assign(c, updated);
       saveDmData();
       editingCharacter = false;
@@ -2420,6 +2342,91 @@ function wireParty() {
       renderParty();
     });
   }
+
+  // ----- ALLY add -----
+  const addAllyBtn = document.getElementById("add-ally");
+  if (addAllyBtn) {
+    addAllyBtn.addEventListener("click", () => {
+      resetConfirm();
+      addingAlly = true;
+      editingAllyId = null;
+      renderParty();
+      const inp = document.getElementById("new-ally-name");
+      if (inp) inp.focus();
+    });
+  }
+  wireFormControls({
+    nameSel: "#new-ally-name",
+    saveSel: "#save-new-ally",
+    cancelSel: "#cancel-new-ally",
+    onSave: () => {
+      const name = (document.getElementById("new-ally-name").value || "").trim();
+      if (!name) return;
+      const a = createDefaultAlly(selectedCharacterId);
+      a.name = name;
+      a.initiativeMod = clamp(Number(document.getElementById("new-ally-init").value) || 0, -10, 30);
+      a.hp_max = clamp(Number(document.getElementById("new-ally-hp").value) || 10, 1, 999);
+      a.ac = clamp(Number(document.getElementById("new-ally-ac").value) || 10, 0, 99);
+      dmData.party.allies = dmData.party.allies || [];
+      dmData.party.allies.push(a);
+      saveDmData();
+      addingAlly = false;
+      renderParty();
+    },
+    onCancel: () => { addingAlly = false; renderParty(); },
+  });
+
+  // ----- ALLY edit -----
+  document.querySelectorAll("[data-edit-ally]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingAllyId = btn.dataset.editAlly;
+      addingAlly = false;
+      renderParty();
+      const inp = document.querySelector(`[data-af-name="${editingAllyId}"]`);
+      if (inp) { inp.focus(); inp.select(); }
+    });
+  });
+
+  document.querySelectorAll("[data-save-ally]").forEach(btn => {
+    const id = btn.dataset.saveAlly;
+    wireFormControls({
+      nameSel: `[data-af-name="${id}"]`,
+      saveSel: `[data-save-ally="${id}"]`,
+      cancelSel: `[data-cancel-ally="${id}"]`,
+      onSave: () => {
+        const ally = (dmData.party.allies || []).find(a => a.id === id);
+        if (!ally) return;
+        const name = (document.querySelector(`[data-af-name="${id}"]`).value || "").trim();
+        if (!name) return;
+        ally.name = name;
+        ally.initiativeMod = clamp(Number(document.querySelector(`[data-af-init="${id}"]`).value) || 0, -10, 30);
+        ally.hp_max = clamp(Number(document.querySelector(`[data-af-hp="${id}"]`).value) || 10, 1, 999);
+        ally.ac = clamp(Number(document.querySelector(`[data-af-ac="${id}"]`).value) || 10, 0, 99);
+        saveDmData();
+        editingAllyId = null;
+        renderParty();
+      },
+      onCancel: () => { editingAllyId = null; renderParty(); },
+    });
+  });
+
+  // ----- ALLY delete -----
+  document.querySelectorAll("[data-delete-ally]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deleteAlly;
+      if (confirmingAllyDeleteId === id) {
+        dmData.party.allies = (dmData.party.allies || []).filter(a => a.id !== id);
+        saveDmData();
+        confirmingAllyDeleteId = null;
+        renderParty();
+      } else {
+        confirmingAllyDeleteId = id;
+        confirmingCharacterDeleteId = null;
+        renderParty();
+      }
+    });
+  });
 }
 
 // Pulls all the form fields out of the active character form and returns a

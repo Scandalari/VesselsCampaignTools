@@ -14,7 +14,7 @@ import webview
 
 # Source of truth for app version. installer.iss MyAppVersion must match
 # before each release build (build.bat handles the bump for both).
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 GITHUB_REPO = "Scandalari/VesselsCampaignTools"
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -29,7 +29,7 @@ DEFAULT_SETTINGS = {"mode": "player"}
 # future per-character import/export. Loot and Combat will nest as siblings of
 # "party" inside this same file.
 DEFAULT_DM_DATA = {
-    "party": {"folders": [], "characters": []},
+    "party": {"characters": [], "allies": []},
 }
 
 DEFAULT_CHARACTER = {
