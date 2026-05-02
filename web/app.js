@@ -1,11 +1,55 @@
-// Wait for the Python JsApi bridge to be ready before any window.pywebview.api
-// calls — the api object isn't attached until after pywebviewready fires.
-window.addEventListener("pywebviewready", init);
+// Tabs per mode. Settings is NOT here — it lives as a corner button so each
+// mode shows exactly the four in-game tabs the user specified.
+const TABS = {
+  player: [
+    { id: "dashboard", label: "DASHBOARD" },
+    { id: "inventory", label: "INVENTORY" },
+    { id: "logs",      label: "LOGS" },
+    { id: "notes",     label: "NOTES" },
+  ],
+  dm: [
+    { id: "dashboard", label: "DASHBOARD" },
+    { id: "party",     label: "PARTY" },
+    { id: "combat",    label: "COMBAT" },
+    { id: "loot",      label: "LOOT" },
+  ],
+};
 
-async function init() {
-  await loadVersion();
-  wireTabs();
+let settings = { mode: "player" };
+let activeView = "dashboard";
+
+// Render eagerly with defaults so the preview panel works even before the
+// Python bridge attaches. The pywebviewready handler then upgrades to real
+// settings when running inside the actual app.
+document.addEventListener("DOMContentLoaded", () => {
+  renderTabs();
+  setActiveView("dashboard");
+  wireSettingsButton();
+  wireModeSwitch();
   wireUpdateButton();
+});
+
+window.addEventListener("pywebviewready", async () => {
+  await loadVersion();
+  await loadSettings();
+  renderTabs();
+  setActiveView(activeView);
+});
+
+async function loadSettings() {
+  try {
+    const s = await window.pywebview.api.get_settings();
+    if (s && typeof s === "object") settings = s;
+  } catch (e) {}
+  if (settings.mode !== "player" && settings.mode !== "dm") {
+    settings.mode = "player";
+  }
+}
+
+async function saveSettings() {
+  try {
+    await window.pywebview.api.save_settings(settings);
+  } catch (e) {}
 }
 
 async function loadVersion() {
@@ -19,14 +63,60 @@ async function loadVersion() {
   }
 }
 
-function wireTabs() {
-  const tabs = document.querySelectorAll(".tab");
-  const views = document.querySelectorAll(".view");
-  tabs.forEach((tab) => {
-    tab.addEventListener("click", () => {
-      const target = tab.dataset.view;
-      tabs.forEach((t) => t.classList.toggle("active", t === tab));
-      views.forEach((v) => v.classList.toggle("active", v.dataset.view === target));
+function renderTabs() {
+  const container = document.getElementById("tabs");
+  if (!container) return;
+  container.innerHTML = "";
+  for (const t of TABS[settings.mode]) {
+    const btn = document.createElement("button");
+    btn.className = "tab";
+    btn.dataset.view = t.id;
+    btn.textContent = t.label;
+    btn.addEventListener("click", () => setActiveView(t.id));
+    container.appendChild(btn);
+  }
+}
+
+function setActiveView(viewId) {
+  // If a stale view (from the other mode) is requested, fall back to dashboard.
+  const allowed = TABS[settings.mode].map(t => t.id);
+  if (viewId !== "settings" && !allowed.includes(viewId)) {
+    viewId = "dashboard";
+  }
+  activeView = viewId;
+
+  document.querySelectorAll(".tab").forEach(t => {
+    t.classList.toggle("active", t.dataset.view === viewId);
+  });
+  document.querySelectorAll(".view").forEach(v => {
+    v.classList.toggle("active", v.dataset.view === viewId);
+  });
+  const sb = document.getElementById("open-settings");
+  if (sb) sb.classList.toggle("active", viewId === "settings");
+
+  document.querySelectorAll(".mode-option").forEach(o => {
+    o.classList.toggle("active", o.dataset.mode === settings.mode);
+  });
+}
+
+function wireSettingsButton() {
+  const btn = document.getElementById("open-settings");
+  if (!btn) return;
+  btn.addEventListener("click", () => setActiveView("settings"));
+}
+
+function wireModeSwitch() {
+  const sw = document.getElementById("mode-switch");
+  if (!sw) return;
+  sw.querySelectorAll(".mode-option").forEach(opt => {
+    opt.addEventListener("click", async () => {
+      const newMode = opt.dataset.mode;
+      if (newMode === settings.mode) return;
+      settings.mode = newMode;
+      await saveSettings();
+      renderTabs();
+      // Stay on Settings while toggling so user can flip modes back-to-back.
+      setActiveView("settings");
     });
   });
 }

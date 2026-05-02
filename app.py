@@ -12,11 +12,13 @@ import webview
 
 # Source of truth for app version. installer.iss MyAppVersion must match
 # before each release build (build.bat handles the bump for both).
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 GITHUB_REPO = "Scandalari/VesselsCampaignTools"
 
 WEB_DIR = Path(__file__).parent / "web"
 APP_DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "KizunaTablet"
+SETTINGS_PATH = APP_DATA_DIR / "settings.json"
+DEFAULT_SETTINGS = {"mode": "player"}
 
 WINDOW_TITLE = "Kizuna Tablet"
 
@@ -33,11 +35,43 @@ def _parse_version(s):
         return None
 
 
+def _load_settings():
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return dict(DEFAULT_SETTINGS)
+    merged = dict(DEFAULT_SETTINGS)
+    if isinstance(data, dict):
+        merged.update(data)
+    return merged
+
+
+def _save_settings(settings):
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except OSError:
+        return False
+
+
 class JsApi:
     """Methods exposed to the web UI via window.pywebview.api.<name>()."""
 
     def get_version(self):
         return __version__
+
+    def get_settings(self):
+        return _load_settings()
+
+    def save_settings(self, settings):
+        if not isinstance(settings, dict):
+            return {"ok": False}
+        merged = dict(DEFAULT_SETTINGS)
+        merged.update(settings)
+        return {"ok": _save_settings(merged)}
 
     def check_for_update(self):
         payload = {
