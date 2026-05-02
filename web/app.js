@@ -134,6 +134,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireModeSwitch();
   wireUpdateButton();
   renderDashboard();
+  renderInventory();
 });
 
 window.addEventListener("pywebviewready", async () => {
@@ -144,6 +145,7 @@ window.addEventListener("pywebviewready", async () => {
   renderTabs();
   setActiveView(activeView);
   renderDashboard();
+  renderInventory();
 });
 
 function createDefaultCharacter() {
@@ -163,6 +165,7 @@ function createDefaultCharacter() {
     actions: [],
     action_economy: { Action: true, Bonus: true, Reaction: true, Movement: true, Object: true },
     proficiencies: { armor: "", weapons: "", tools: "", languages: "" },
+    inventory: [],
   };
 }
 
@@ -1149,6 +1152,72 @@ function escapeHtml(s) {
 function saveAndRerender() {
   saveCharacter();
   renderDashboard();
+}
+
+// ============================================================
+// INVENTORY
+// ============================================================
+
+function renderInventory() {
+  const container = document.getElementById("inventory");
+  if (!container) return;
+  const items = character.inventory || [];
+  const list = items.length === 0
+    ? `<div class="inventory-empty">Nothing carried. Click "+ ADD ITEM" to start.</div>`
+    : items.map(item => `
+        <div class="inventory-item">
+          <textarea data-inv-id="${item.id}" placeholder="What is it? (be as brief or detailed as you want)">${escapeHtml(item.text)}</textarea>
+          <button class="inventory-delete" data-delete-inv="${item.id}" title="delete">×</button>
+        </div>
+      `).join("");
+  container.innerHTML = `
+    <div class="inventory-header">
+      <div class="inventory-title">INVENTORY</div>
+      <button class="btn" id="add-item">+ ADD ITEM</button>
+    </div>
+    <div class="inventory-list">${list}</div>
+  `;
+  wireInventory();
+}
+
+function wireInventory() {
+  const addBtn = document.getElementById("add-item");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => {
+      character.inventory = character.inventory || [];
+      const newItem = {
+        id: "i" + Date.now() + Math.random().toString(36).slice(2, 7),
+        text: "",
+      };
+      character.inventory.push(newItem);
+      saveCharacter();
+      renderInventory();
+      // Drop focus into the freshly-added item so the user can just start typing.
+      const ta = document.querySelector(`textarea[data-inv-id="${newItem.id}"]`);
+      if (ta) ta.focus();
+    });
+  }
+
+  // No rerender on keystroke — only the textarea's own value is changing,
+  // nothing derived. Just save.
+  document.querySelectorAll("textarea[data-inv-id]").forEach(ta => {
+    ta.addEventListener("input", e => {
+      const id = e.target.dataset.invId;
+      const item = (character.inventory || []).find(i => i.id === id);
+      if (!item) return;
+      item.text = e.target.value;
+      saveCharacter();
+    });
+  });
+
+  document.querySelectorAll("[data-delete-inv]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deleteInv;
+      character.inventory = (character.inventory || []).filter(i => i.id !== id);
+      saveCharacter();
+      renderInventory();
+    });
+  });
 }
 
 // ============================================================

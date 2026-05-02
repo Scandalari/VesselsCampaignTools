@@ -802,3 +802,95 @@ html, body {
   margin-top: 6px;
 }
 .add-attack-row select, .add-attack-row .btn { font-size: 10px; padding: 4px 8px; }
+
+/* ============================================================
+   INVENTORY
+   ============================================================ */
+.inventory {
+  padding: 24px 32px;
+  max-width: 880px;
+  margin: 0 auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.inventory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #1a1a2e;
+  margin-bottom: 16px;
+}
+
+.inventory-title {
+  font-size: 20px;
+  letter-spacing: 0.3em;
+  font-weight: 800;
+  color: #ff2a8a;
+  text-shadow: 0 0 10px rgba(255, 42, 138, 0.4);
+}
+
+.inventory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+
+.inventory-item {
+  display: grid;
+  grid-template-columns: 1fr 28px;
+  gap: 6px;
+  align-items: start;
+  border: 1px solid #1a1a2e;
+  background: #0f0f1a;
+  padding: 6px 8px;
+  transition: border-color 120ms, box-shadow 120ms;
+}
+
+.inventory-item:focus-within {
+  border-color: #00d4e0;
+  box-shadow: 0 0 10px rgba(0, 212, 224, 0.25);
+}
+
+.inventory-item textarea {
+  background: transparent;
+  border: none;
+  color: #e6e0f0;
+  font: inherit;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 4px;
+  resize: vertical;
+  min-height: 28px;
+  line-height: 1.5;
+  width: 100%;
+}
+
+.inventory-item textarea:focus { outline: none; }
+
+.inventory-delete {
+  background: transparent;
+  border: none;
+  color: #ff5577;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 0;
+  align-self: start;
+  line-height: 1;
+}
+
+.inventory-delete:hover { text-shadow: 0 0 8px rgba(255, 85, 119, 0.6); }
+
+.inventory-empty {
+  color: #4a4a5a;
+  font-size: 13px;
+  font-style: italic;
+  text-align: center;
+  padding: 60px 0;
+  letter-spacing: 0.05em;
+}
