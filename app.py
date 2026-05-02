@@ -14,15 +14,23 @@ import webview
 
 # Source of truth for app version. installer.iss MyAppVersion must match
 # before each release build (build.bat handles the bump for both).
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 GITHUB_REPO = "Scandalari/VesselsCampaignTools"
 
 WEB_DIR = Path(__file__).parent / "web"
 APP_DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "KizunaTablet"
 SETTINGS_PATH = APP_DATA_DIR / "settings.json"
 CHARACTER_PATH = APP_DATA_DIR / "character.json"
+DM_DATA_PATH = APP_DATA_DIR / "dm.json"
 PORTRAITS_DIR = APP_DATA_DIR / "portraits"
 DEFAULT_SETTINGS = {"mode": "player"}
+
+# DM-mode data lives in its own file so player-character data stays clean for
+# future per-character import/export. Loot and Combat will nest as siblings of
+# "party" inside this same file.
+DEFAULT_DM_DATA = {
+    "party": {"folders": [], "characters": []},
+}
 
 DEFAULT_CHARACTER = {
     "name": "",
@@ -136,6 +144,34 @@ def _save_character(char):
         return False
 
 
+def _load_dm_data():
+    try:
+        with open(DM_DATA_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return _deep_copy(DEFAULT_DM_DATA)
+    if not isinstance(data, dict):
+        return _deep_copy(DEFAULT_DM_DATA)
+    base = _deep_copy(DEFAULT_DM_DATA)
+    for key, value in data.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            merged = dict(base[key]); merged.update(value)
+            base[key] = merged
+        else:
+            base[key] = value
+    return base
+
+
+def _save_dm_data(data):
+    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(DM_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True
+    except OSError:
+        return False
+
+
 def _portrait_to_base64(filename):
     if not filename:
         return None
@@ -173,6 +209,14 @@ class JsApi:
         if not isinstance(char, dict):
             return {"ok": False}
         return {"ok": _save_character(char)}
+
+    def get_dm_data(self):
+        return _load_dm_data()
+
+    def save_dm_data(self, data):
+        if not isinstance(data, dict):
+            return {"ok": False}
+        return {"ok": _save_dm_data(data)}
 
     def get_portrait_data(self, filename):
         return _portrait_to_base64(filename)

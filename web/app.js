@@ -140,6 +140,20 @@ let editingNoteId = null;
 let expandedNoteId = null;
 let confirmingNoteDeleteId = null;
 
+// Party (DM mode) state. 3-level nav:
+//   selectedPartyFolderId === null                    → folder grid
+//   selectedPartyFolderId set, selectedCharacterId null → character grid in folder
+//   selectedCharacterId set                            → character detail (view or edit)
+let dmData = null;
+let selectedPartyFolderId = null;
+let selectedCharacterId = null;
+let editingCharacter = false;
+let addingPartyFolder = false;
+let editingPartyFolderId = null;
+let confirmingPartyFolderDeleteId = null;
+let addingCharacter = false;
+let confirmingCharacterDeleteId = null;
+
 // ============================================================
 // INIT
 // ============================================================
@@ -147,6 +161,7 @@ let confirmingNoteDeleteId = null;
 document.addEventListener("DOMContentLoaded", () => {
   // Render eagerly with defaults so the preview panel works without pywebview.
   character = createDefaultCharacter();
+  dmData = createDefaultDmData();
   renderTabs();
   setActiveView("dashboard");
   wireSettingsButton();
@@ -155,6 +170,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderDashboard();
   renderInventory();
   renderNotes();
+  renderParty();
 });
 
 window.addEventListener("pywebviewready", async () => {
@@ -162,12 +178,51 @@ window.addEventListener("pywebviewready", async () => {
   await loadSettings();
   await loadCharacter();
   await loadPortrait();
+  await loadDmData();
   renderTabs();
   setActiveView(activeView);
   renderDashboard();
   renderInventory();
   renderNotes();
+  renderParty();
 });
+
+function createDefaultDmData() {
+  return { party: { folders: [], characters: [] } };
+}
+
+async function loadDmData() {
+  try {
+    const d = await window.pywebview.api.get_dm_data();
+    if (d && typeof d === "object") dmData = d;
+  } catch (e) {}
+  if (!dmData) dmData = createDefaultDmData();
+  if (!dmData.party || typeof dmData.party !== "object") {
+    dmData.party = { folders: [], characters: [] };
+  }
+  if (!Array.isArray(dmData.party.folders)) dmData.party.folders = [];
+  if (!Array.isArray(dmData.party.characters)) dmData.party.characters = [];
+}
+
+async function saveDmData() {
+  try { await window.pywebview.api.save_dm_data(dmData); } catch (e) {}
+}
+
+function createDefaultPartyCharacter() {
+  return {
+    id: "c" + Date.now() + Math.random().toString(36).slice(2, 7),
+    folderId: null,
+    name: "",
+    class: "",
+    level: 1,
+    abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+    passives: { perception: 10, investigation: 10, insight: 10 },
+    languages: "",
+    features: "",
+    description: "",
+    personality: "",
+  };
+}
 
 function createDefaultCharacter() {
   const skills = {};
@@ -1850,6 +1905,544 @@ function wireNotes() {
       }
     });
   });
+}
+
+// ============================================================
+// PARTY (DM mode — folders → character grid → character detail)
+// ============================================================
+
+function renderParty() {
+  const container = document.getElementById("party");
+  if (!container) return;
+
+  // Validate state — clear stale references if data was deleted out from under us.
+  const folders = dmData.party.folders;
+  const chars = dmData.party.characters;
+  if (selectedPartyFolderId && !folders.find(f => f.id === selectedPartyFolderId)) {
+    selectedPartyFolderId = null;
+    selectedCharacterId = null;
+  }
+  if (selectedCharacterId && !chars.find(c => c.id === selectedCharacterId)) {
+    selectedCharacterId = null;
+  }
+
+  if (selectedCharacterId) {
+    container.innerHTML = renderCharacterDetailView();
+  } else if (selectedPartyFolderId) {
+    container.innerHTML = renderCharacterGridView();
+  } else {
+    container.innerHTML = renderPartyFolderGrid();
+  }
+  wireParty();
+}
+
+// ----- LEVEL 1: folder grid -----
+function renderPartyFolderGrid() {
+  const folders = dmData.party.folders;
+  let body;
+  if (folders.length === 0 && !addingPartyFolder) {
+    body = `<div class="notes-empty">No party folders yet. Create one to start (e.g. "Players", "Allies", "Recurring NPCs").</div>`;
+  } else {
+    body = `<div class="notes-folders-grid">${folders.map(f => renderPartyFolderCard(f)).join("")}</div>`;
+  }
+  const addBtn = addingPartyFolder
+    ? `<div></div>`
+    : `<button class="btn" id="add-party-folder">+ NEW FOLDER</button>`;
+  return `
+    <div class="notes-header">
+      <div></div>
+      <div class="notes-title">PARTY</div>
+      ${addBtn}
+    </div>
+    ${addingPartyFolder ? renderPartyFolderForm(null) : ""}
+    ${body}
+  `;
+}
+
+function renderPartyFolderCard(folder) {
+  if (editingPartyFolderId === folder.id) return renderPartyFolderForm(folder);
+  const count = dmData.party.characters.filter(c => c.folderId === folder.id).length;
+  const isConfirming = confirmingPartyFolderDeleteId === folder.id;
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-delete-party-folder="${folder.id}">SURE?</button>`
+    : `<button class="item-delete" data-delete-party-folder="${folder.id}">×</button>`;
+  return `
+    <div class="folder-card">
+      <div class="folder-card-name clickable" data-enter-party-folder="${folder.id}">${escapeHtml(folder.name)}</div>
+      <div class="folder-card-count">${count} ${count === 1 ? "character" : "characters"}</div>
+      <div class="folder-card-actions">
+        <button class="item-edit" data-rename-party-folder="${folder.id}">RENAME</button>
+        ${deleteBtn}
+      </div>
+    </div>
+  `;
+}
+
+function renderPartyFolderForm(folder) {
+  const isEdit = !!folder;
+  const nameVal = isEdit ? escapeHtml(folder.name) : "";
+  const ns = isEdit ? `data-edit-party-folder-name="${folder.id}"` : `id="new-party-folder-name"`;
+  const saveAttr = isEdit ? `data-save-party-folder="${folder.id}"` : `id="party-folder-save"`;
+  const cancelAttr = isEdit ? `data-cancel-party-folder="${folder.id}"` : `id="party-folder-cancel"`;
+  const saveDisabled = isEdit ? "" : "disabled";
+  const wrapClass = isEdit ? "folder-card editing" : "folder-form";
+  return `
+    <div class="${wrapClass}">
+      <div class="item-form">
+        <label class="form-label">Folder Name <span class="required">*</span></label>
+        <input type="text" ${ns} value="${nameVal}" placeholder="Folder name" />
+        <div class="form-buttons">
+          <button class="btn" ${saveAttr} ${saveDisabled}>SAVE</button>
+          <button class="btn danger" ${cancelAttr}>CANCEL</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ----- LEVEL 2: character grid in folder -----
+function renderCharacterGridView() {
+  const folder = dmData.party.folders.find(f => f.id === selectedPartyFolderId);
+  if (!folder) return "";
+  const chars = dmData.party.characters.filter(c => c.folderId === selectedPartyFolderId);
+  let body;
+  if (chars.length === 0 && !addingCharacter) {
+    body = `<div class="notes-empty">No characters in this folder. Click "+ NEW CHARACTER" to add one.</div>`;
+  } else {
+    body = `<div class="character-grid">${chars.map(c => renderCharacterCard(c)).join("")}</div>`;
+  }
+  const addBtn = addingCharacter
+    ? `<div></div>`
+    : `<button class="btn" id="add-character">+ NEW CHARACTER</button>`;
+  return `
+    <div class="notes-header">
+      <button class="btn back-btn" id="back-to-party-folders">FOLDERS</button>
+      <div class="notes-title">${escapeHtml(folder.name)}</div>
+      ${addBtn}
+    </div>
+    ${addingCharacter ? renderCharacterForm(createDefaultPartyCharacter(), true) : ""}
+    ${body}
+  `;
+}
+
+function renderCharacterCard(c) {
+  const isConfirming = confirmingCharacterDeleteId === c.id;
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-delete-character="${c.id}">SURE?</button>`
+    : `<button class="item-delete" data-delete-character="${c.id}">×</button>`;
+  const meta = [c.class, c.level ? "Lv " + c.level : ""].filter(Boolean).join(" · ");
+  return `
+    <div class="character-card">
+      <div class="character-card-name clickable" data-open-character="${c.id}">${escapeHtml(c.name) || "<span class='placeholder'>(unnamed)</span>"}</div>
+      <div class="character-card-meta">${escapeHtml(meta) || "&nbsp;"}</div>
+      <div class="folder-card-actions">
+        <button class="item-edit" data-open-character="${c.id}">VIEW</button>
+        ${deleteBtn}
+      </div>
+    </div>
+  `;
+}
+
+// ----- LEVEL 3: character detail -----
+function renderCharacterDetailView() {
+  const c = dmData.party.characters.find(c => c.id === selectedCharacterId);
+  if (!c) return "";
+  if (editingCharacter) return renderCharacterDetailEdit(c);
+  return renderCharacterDetailRead(c);
+}
+
+function renderCharacterDetailRead(c) {
+  const folder = dmData.party.folders.find(f => f.id === c.folderId);
+  const meta = [c.class, c.level ? "Lv " + c.level : ""].filter(Boolean).join(" · ");
+  return `
+    <div class="character-detail">
+      <div class="detail-header">
+        <button class="btn back-btn" id="back-to-character-grid">${escapeHtml(folder ? folder.name : "BACK")}</button>
+        <div class="detail-title-block">
+          <div class="detail-name">${escapeHtml(c.name) || "(unnamed)"}</div>
+          <div class="detail-meta">${escapeHtml(meta)}</div>
+        </div>
+        <button class="btn" id="edit-character">EDIT</button>
+      </div>
+
+      <div class="detail-body">
+        <div class="detail-grid-2">
+          <div class="panel">
+            <div class="panel-header">STATS</div>
+            <div class="detail-stats">
+              ${["STR","DEX","CON","INT","WIS","CHA"].map(ab => `
+                <div class="detail-stat-row">
+                  <span class="detail-stat-label">${ab}</span>
+                  <span class="detail-stat-value">${c.abilities[ab]} <span class="subtle-mod">(${fmtMod(abilityMod(c.abilities[ab]))})</span></span>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">PASSIVES</div>
+            <div class="detail-passives">
+              <div class="detail-stat-row"><span class="detail-stat-label">Perception</span><span class="detail-stat-value">${c.passives.perception}</span></div>
+              <div class="detail-stat-row"><span class="detail-stat-label">Investigation</span><span class="detail-stat-value">${c.passives.investigation}</span></div>
+              <div class="detail-stat-row"><span class="detail-stat-label">Insight</span><span class="detail-stat-value">${c.passives.insight}</span></div>
+            </div>
+            <div class="panel-header" style="margin-top:14px;">LANGUAGES</div>
+            <div class="detail-text ${c.languages ? "" : "empty"}">${c.languages ? escapeHtml(c.languages) : "(none)"}</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">FEATURES &amp; TRAITS</div>
+          <div class="detail-text ${c.features ? "" : "empty"}">${c.features ? escapeHtml(c.features) : "(none)"}</div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">DESCRIPTION</div>
+          <div class="detail-text ${c.description ? "" : "empty"}">${c.description ? escapeHtml(c.description) : "(none)"}</div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">PERSONALITY</div>
+          <div class="detail-text ${c.personality ? "" : "empty"}">${c.personality ? escapeHtml(c.personality) : "(none)"}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCharacterDetailEdit(c) {
+  return renderCharacterForm(c, false);
+}
+
+// Used for both Add (isNew=true) and Edit (isNew=false). Same shape, different
+// save/cancel destinations.
+function renderCharacterForm(c, isNew) {
+  return `
+    <div class="character-detail">
+      <div class="detail-header">
+        <div></div>
+        <div class="detail-title-block">
+          <div class="detail-name" style="font-size:16px; color:#ff2a8a;">${isNew ? "NEW CHARACTER" : "EDITING " + escapeHtml(c.name || "(unnamed)")}</div>
+        </div>
+        <div></div>
+      </div>
+
+      <div class="detail-body">
+        <div class="panel">
+          <div class="panel-header">IDENTITY</div>
+          <div class="detail-form-row">
+            <label class="form-label">Name <span class="required">*</span></label>
+            <input type="text" data-cf="name" value="${escapeHtml(c.name)}" placeholder="Character name" />
+          </div>
+          <div class="detail-form-grid">
+            <div class="detail-form-row">
+              <label class="form-label">Class</label>
+              <input type="text" data-cf="class" value="${escapeHtml(c.class)}" placeholder="Wizard, Paladin, etc." />
+            </div>
+            <div class="detail-form-row">
+              <label class="form-label">Level</label>
+              <input type="number" min="1" max="20" data-cf="level" value="${c.level}" />
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-grid-2">
+          <div class="panel">
+            <div class="panel-header">STATS</div>
+            <div class="detail-form-grid-3">
+              ${["STR","DEX","CON","INT","WIS","CHA"].map(ab => `
+                <div class="detail-form-row">
+                  <label class="form-label">${ab}</label>
+                  <input type="number" min="1" max="30" data-cf-ab="${ab}" value="${c.abilities[ab]}" />
+                </div>
+              `).join("")}
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">PASSIVES</div>
+            <div class="detail-form-grid">
+              <div class="detail-form-row">
+                <label class="form-label">Perception</label>
+                <input type="number" min="0" data-cf-pas="perception" value="${c.passives.perception}" />
+              </div>
+              <div class="detail-form-row">
+                <label class="form-label">Investigation</label>
+                <input type="number" min="0" data-cf-pas="investigation" value="${c.passives.investigation}" />
+              </div>
+              <div class="detail-form-row">
+                <label class="form-label">Insight</label>
+                <input type="number" min="0" data-cf-pas="insight" value="${c.passives.insight}" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">LANGUAGES</div>
+          <div class="detail-form-row">
+            <input type="text" data-cf="languages" value="${escapeHtml(c.languages)}" placeholder="Common, Elvish, Sylvan, ..." />
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">FEATURES &amp; TRAITS</div>
+          <div class="detail-form-row">
+            <textarea data-cf="features" placeholder="Alert, Resistance to fire, Fey Ancestry, ...">${escapeHtml(c.features)}</textarea>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">DESCRIPTION</div>
+          <div class="detail-form-row">
+            <textarea data-cf="description" placeholder="Physical appearance">${escapeHtml(c.description)}</textarea>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">PERSONALITY</div>
+          <div class="detail-form-row">
+            <textarea data-cf="personality" placeholder="Temperament, quirks, mannerisms">${escapeHtml(c.personality)}</textarea>
+          </div>
+        </div>
+
+        <div class="form-buttons" style="justify-content: flex-end;">
+          <button class="btn danger" id="${isNew ? "cancel-new-character" : "cancel-edit-character"}">CANCEL</button>
+          <button class="btn" id="${isNew ? "save-new-character" : "save-edit-character"}" data-character-staging='${escapeHtml(JSON.stringify(c))}'>SAVE</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireParty() {
+  const resetConfirm = () => {
+    confirmingPartyFolderDeleteId = null;
+    confirmingCharacterDeleteId = null;
+  };
+
+  // ----- folder add -----
+  const addFolderBtn = document.getElementById("add-party-folder");
+  if (addFolderBtn) {
+    addFolderBtn.addEventListener("click", () => {
+      resetConfirm();
+      addingPartyFolder = true;
+      editingPartyFolderId = null;
+      renderParty();
+      const inp = document.getElementById("new-party-folder-name");
+      if (inp) inp.focus();
+    });
+  }
+  wireFormControls({
+    nameSel: "#new-party-folder-name",
+    saveSel: "#party-folder-save",
+    cancelSel: "#party-folder-cancel",
+    onSave: () => {
+      const name = (document.getElementById("new-party-folder-name").value || "").trim();
+      if (!name) return;
+      dmData.party.folders.push({ id: "pf" + Date.now() + Math.random().toString(36).slice(2,7), name });
+      saveDmData();
+      addingPartyFolder = false;
+      renderParty();
+    },
+    onCancel: () => { addingPartyFolder = false; renderParty(); },
+  });
+
+  // ----- folder rename -----
+  document.querySelectorAll("[data-rename-party-folder]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingPartyFolderId = btn.dataset.renamePartyFolder;
+      addingPartyFolder = false;
+      renderParty();
+      const inp = document.querySelector(`[data-edit-party-folder-name="${editingPartyFolderId}"]`);
+      if (inp) { inp.focus(); inp.select(); }
+    });
+  });
+  document.querySelectorAll("[data-save-party-folder]").forEach(btn => {
+    const id = btn.dataset.savePartyFolder;
+    wireFormControls({
+      nameSel: `[data-edit-party-folder-name="${id}"]`,
+      saveSel: `[data-save-party-folder="${id}"]`,
+      cancelSel: `[data-cancel-party-folder="${id}"]`,
+      onSave: () => {
+        const folder = dmData.party.folders.find(f => f.id === id);
+        if (!folder) return;
+        const name = (document.querySelector(`[data-edit-party-folder-name="${id}"]`).value || "").trim();
+        if (!name) return;
+        folder.name = name;
+        saveDmData();
+        editingPartyFolderId = null;
+        renderParty();
+      },
+      onCancel: () => { editingPartyFolderId = null; renderParty(); },
+    });
+  });
+
+  // ----- folder enter -----
+  document.querySelectorAll("[data-enter-party-folder]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      selectedPartyFolderId = el.dataset.enterPartyFolder;
+      renderParty();
+    });
+  });
+
+  // ----- folder delete (cascades to characters) -----
+  document.querySelectorAll("[data-delete-party-folder]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deletePartyFolder;
+      if (confirmingPartyFolderDeleteId === id) {
+        dmData.party.folders = dmData.party.folders.filter(f => f.id !== id);
+        dmData.party.characters = dmData.party.characters.filter(c => c.folderId !== id);
+        saveDmData();
+        confirmingPartyFolderDeleteId = null;
+        renderParty();
+      } else {
+        confirmingPartyFolderDeleteId = id;
+        confirmingCharacterDeleteId = null;
+        renderParty();
+      }
+    });
+  });
+
+  // ----- back to party folders -----
+  const backFolders = document.getElementById("back-to-party-folders");
+  if (backFolders) {
+    backFolders.addEventListener("click", () => {
+      resetConfirm();
+      selectedPartyFolderId = null;
+      addingCharacter = false;
+      renderParty();
+    });
+  }
+
+  // ----- character add -----
+  const addCharBtn = document.getElementById("add-character");
+  if (addCharBtn) {
+    addCharBtn.addEventListener("click", () => {
+      resetConfirm();
+      addingCharacter = true;
+      renderParty();
+      const inp = document.querySelector('input[data-cf="name"]');
+      if (inp) inp.focus();
+    });
+  }
+
+  const saveNewBtn = document.getElementById("save-new-character");
+  if (saveNewBtn) {
+    saveNewBtn.addEventListener("click", () => {
+      const c = readCharacterForm();
+      if (!c.name) return;
+      c.folderId = selectedPartyFolderId;
+      dmData.party.characters.push(c);
+      saveDmData();
+      addingCharacter = false;
+      renderParty();
+    });
+  }
+  const cancelNewBtn = document.getElementById("cancel-new-character");
+  if (cancelNewBtn) {
+    cancelNewBtn.addEventListener("click", () => {
+      addingCharacter = false;
+      renderParty();
+    });
+  }
+
+  // ----- character open (view detail) -----
+  document.querySelectorAll("[data-open-character]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      selectedCharacterId = el.dataset.openCharacter;
+      editingCharacter = false;
+      renderParty();
+    });
+  });
+
+  // ----- character delete (from grid) -----
+  document.querySelectorAll("[data-delete-character]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.deleteCharacter;
+      if (confirmingCharacterDeleteId === id) {
+        dmData.party.characters = dmData.party.characters.filter(c => c.id !== id);
+        saveDmData();
+        confirmingCharacterDeleteId = null;
+        if (selectedCharacterId === id) selectedCharacterId = null;
+        renderParty();
+      } else {
+        confirmingCharacterDeleteId = id;
+        confirmingPartyFolderDeleteId = null;
+        renderParty();
+      }
+    });
+  });
+
+  // ----- back to character grid (from detail) -----
+  const backGrid = document.getElementById("back-to-character-grid");
+  if (backGrid) {
+    backGrid.addEventListener("click", () => {
+      resetConfirm();
+      selectedCharacterId = null;
+      editingCharacter = false;
+      renderParty();
+    });
+  }
+
+  // ----- enter edit mode on character detail -----
+  const editBtn = document.getElementById("edit-character");
+  if (editBtn) {
+    editBtn.addEventListener("click", () => {
+      editingCharacter = true;
+      renderParty();
+      const inp = document.querySelector('input[data-cf="name"]');
+      if (inp) { inp.focus(); inp.select(); }
+    });
+  }
+
+  const saveEditBtn = document.getElementById("save-edit-character");
+  if (saveEditBtn) {
+    saveEditBtn.addEventListener("click", () => {
+      const c = dmData.party.characters.find(c => c.id === selectedCharacterId);
+      if (!c) return;
+      const updated = readCharacterForm();
+      if (!updated.name) return;
+      // Preserve id and folderId — form doesn't expose them.
+      updated.id = c.id;
+      updated.folderId = c.folderId;
+      Object.assign(c, updated);
+      saveDmData();
+      editingCharacter = false;
+      renderParty();
+    });
+  }
+  const cancelEditBtn = document.getElementById("cancel-edit-character");
+  if (cancelEditBtn) {
+    cancelEditBtn.addEventListener("click", () => {
+      editingCharacter = false;
+      renderParty();
+    });
+  }
+}
+
+// Pulls all the form fields out of the active character form and returns a
+// fresh character object. Used by both add and edit flows.
+function readCharacterForm() {
+  const get = sel => document.querySelector(sel);
+  const val = sel => (get(sel)?.value || "").trim();
+  const num = (sel, lo, hi, def) => clamp(Number(get(sel)?.value) || def, lo, hi);
+  const c = createDefaultPartyCharacter();
+  c.name = val('input[data-cf="name"]');
+  c.class = val('input[data-cf="class"]');
+  c.level = num('input[data-cf="level"]', 1, 20, 1);
+  ["STR","DEX","CON","INT","WIS","CHA"].forEach(ab => {
+    c.abilities[ab] = num(`input[data-cf-ab="${ab}"]`, 1, 30, 10);
+  });
+  ["perception","investigation","insight"].forEach(p => {
+    c.passives[p] = num(`input[data-cf-pas="${p}"]`, 0, 99, 10);
+  });
+  c.languages = val('input[data-cf="languages"]');
+  c.features = (get('textarea[data-cf="features"]')?.value || "").trim();
+  c.description = (get('textarea[data-cf="description"]')?.value || "").trim();
+  c.personality = (get('textarea[data-cf="personality"]')?.value || "").trim();
+  return c;
 }
 
 // ============================================================
