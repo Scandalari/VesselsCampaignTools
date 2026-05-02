@@ -160,10 +160,49 @@ let lootCategory = "consumable";
 let lootCount = 15;
 let lootResults = null;
 
+// Combat UI state. addingCombatant gates the inline add form; type tells which
+// shape (party | ally | enemy). Confirmation flags gate the destructive bits.
+let addingCombatant = false;
+let addingCombatantType = null;
+let conditionPickerCombatantId = null;
+let confirmingFinishCombat = false;
+let confirmingResetCombat = false;
+let postCombatLootCount = 10;
+
 const LOOT_CATEGORIES = [
   "consumable", "weapon", "armor", "wondrous",
   "ammo", "gear", "tools", "gem", "art",
 ];
+
+// 5e standard 16 conditions, alphabetized.
+const CONDITIONS = [
+  "Blinded", "Charmed", "Concentration", "Deafened", "Exhaustion",
+  "Frightened", "Grappled", "Incapacitated", "Invisible", "Paralyzed",
+  "Petrified", "Poisoned", "Prone", "Restrained", "Stunned", "Unconscious",
+];
+
+// Enemy type tags — match the `loot:` field strings on items.js so the
+// post-combat loot roller can filter by what the party fought.
+const ENEMY_TYPES = [
+  { id: "civilian", label: "Civilian" },
+  { id: "guard",    label: "Guard" },
+  { id: "military", label: "Military" },
+  { id: "space",    label: "Space" },
+];
+
+// Standard 5e CR → XP table. Used to prefill XP when adding an enemy by CR.
+const CR_TO_XP = {
+  "0": 10, "1/8": 25, "1/4": 50, "1/2": 100,
+  "1": 200, "2": 450, "3": 700, "4": 1100,
+  "5": 1800, "6": 2300, "7": 2900, "8": 3900,
+  "9": 5000, "10": 5900, "11": 7200, "12": 8400,
+  "13": 10000, "14": 11500, "15": 13000, "16": 15000,
+  "17": 18000, "18": 20000, "19": 22000, "20": 25000,
+  "21": 33000, "22": 41000, "23": 50000, "24": 62000,
+  "25": 75000, "26": 90000, "27": 105000, "28": 120000,
+  "29": 135000, "30": 155000,
+};
+const CR_OPTIONS = Object.keys(CR_TO_XP);
 
 // ============================================================
 // INIT
@@ -183,6 +222,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderNotes();
   renderParty();
   renderLoot();
+  renderCombat();
 });
 
 window.addEventListener("pywebviewready", async () => {
@@ -198,10 +238,27 @@ window.addEventListener("pywebviewready", async () => {
   renderNotes();
   renderParty();
   renderLoot();
+  renderCombat();
 });
 
 function createDefaultDmData() {
-  return { party: { characters: [], allies: [] } };
+  return {
+    party: { characters: [], allies: [] },
+    combat: createDefaultCombat(),
+  };
+}
+
+function createDefaultCombat() {
+  return {
+    active: false,
+    finished: false,
+    round: 1,
+    currentTurnIdx: 0,
+    combatants: [],
+    lastEncounterXp: 0,
+    postCombatLoot: null,
+    defeatedEnemyTypes: [],
+  };
 }
 
 function createDefaultAlly(characterId) {
@@ -227,6 +284,11 @@ async function loadDmData() {
   }
   if (!Array.isArray(dmData.party.characters)) dmData.party.characters = [];
   if (!Array.isArray(dmData.party.allies)) dmData.party.allies = [];
+  if (!dmData.combat || typeof dmData.combat !== "object") {
+    dmData.combat = createDefaultCombat();
+  }
+  if (!Array.isArray(dmData.combat.combatants)) dmData.combat.combatants = [];
+  if (!Array.isArray(dmData.combat.defeatedEnemyTypes)) dmData.combat.defeatedEnemyTypes = [];
   // v1.0.7 → v1.0.8: dropped folders. Strip stale data to keep dm.json clean.
   if (dmData.party.folders) delete dmData.party.folders;
   dmData.party.characters.forEach(c => { if (c.folderId !== undefined) delete c.folderId; });
@@ -244,6 +306,8 @@ function createDefaultPartyCharacter() {
     level: 1,
     abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
     passives: { perception: 10, investigation: 10, insight: 10 },
+    hp_max: 0,
+    ac: 10,
     languages: "",
     features: "",
     description: "",
@@ -2048,6 +2112,11 @@ function renderCharacterDetailRead(c) {
               <div class="detail-stat-row"><span class="detail-stat-label">Investigation</span><span class="detail-stat-value">${c.passives.investigation}</span></div>
               <div class="detail-stat-row"><span class="detail-stat-label">Insight</span><span class="detail-stat-value">${c.passives.insight}</span></div>
             </div>
+            <div class="panel-header" style="margin-top:14px;">COMBAT REF</div>
+            <div class="detail-passives">
+              <div class="detail-stat-row"><span class="detail-stat-label">HP Max</span><span class="detail-stat-value">${c.hp_max || "—"}</span></div>
+              <div class="detail-stat-row"><span class="detail-stat-label">AC</span><span class="detail-stat-value">${c.ac || 10}</span></div>
+            </div>
             <div class="panel-header" style="margin-top:14px;">LANGUAGES</div>
             <div class="detail-text ${c.languages ? "" : "empty"}">${c.languages ? escapeHtml(c.languages) : "(none)"}</div>
           </div>
@@ -2198,6 +2267,17 @@ function renderCharacterForm(c, isNew) {
               <div class="detail-form-row">
                 <label class="form-label">Insight</label>
                 <input type="number" min="0" data-cf-pas="insight" value="${c.passives.insight}" />
+              </div>
+            </div>
+            <div class="panel-header" style="margin-top:14px;">COMBAT REF</div>
+            <div class="detail-form-grid">
+              <div class="detail-form-row">
+                <label class="form-label">HP Max</label>
+                <input type="number" min="0" data-cf="hp_max" value="${c.hp_max || 0}" />
+              </div>
+              <div class="detail-form-row">
+                <label class="form-label">AC</label>
+                <input type="number" min="0" data-cf="ac" value="${c.ac || 10}" />
               </div>
             </div>
           </div>
@@ -2459,6 +2539,8 @@ function readCharacterForm() {
     c.passives[p] = num(`input[data-cf-pas="${p}"]`, 0, 99, 10);
   });
   c.languages = val('input[data-cf="languages"]');
+  c.hp_max = num('input[data-cf="hp_max"]', 0, 9999, 0);
+  c.ac = num('input[data-cf="ac"]', 0, 99, 10);
   c.features = (get('textarea[data-cf="features"]')?.value || "").trim();
   c.description = (get('textarea[data-cf="description"]')?.value || "").trim();
   c.personality = (get('textarea[data-cf="personality"]')?.value || "").trim();
@@ -2567,6 +2649,818 @@ function formatRarity(r) {
 function titleCase(s) {
   if (!s) return "";
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// ============================================================
+// COMBAT (DM mode — initiative tracker, HP, conditions, XP, post-combat loot)
+// ============================================================
+
+function renderCombat() {
+  const container = document.getElementById("combat");
+  if (!container) return;
+  const c = dmData.combat;
+  if (c.finished) {
+    container.innerHTML = renderCombatFinished();
+  } else if (c.active) {
+    container.innerHTML = renderCombatActive();
+  } else {
+    container.innerHTML = renderCombatSetup();
+  }
+  wireCombat();
+}
+
+// ----- helpers -----
+function rollD20() { return Math.floor(Math.random() * 20) + 1; }
+
+function sortCombatants(list) {
+  return [...list].sort((a, b) => {
+    const ai = a.initiative == null ? -999 : a.initiative;
+    const bi = b.initiative == null ? -999 : b.initiative;
+    return bi - ai;
+  });
+}
+
+function combatantById(id) {
+  return dmData.combat.combatants.find(c => c.id === id);
+}
+
+function liveParty() {
+  return dmData.combat.combatants.filter(c => c.type === "party");
+}
+
+function partyDexMod(character) {
+  if (!character || !character.abilities) return 0;
+  return Math.floor((Number(character.abilities.DEX) - 10) / 2);
+}
+
+// ----- SETUP MODE -----
+function renderCombatSetup() {
+  const combatants = dmData.combat.combatants;
+  const canStart = combatants.length >= 1;
+  let listHtml;
+  if (combatants.length === 0 && !addingCombatant) {
+    listHtml = `<div class="notes-empty">No combatants. Add party members, allies, or enemies to begin.</div>`;
+  } else {
+    listHtml = `<div class="combat-list">${combatants.map(c => renderSetupRow(c)).join("")}</div>`;
+  }
+  return `
+    <div class="notes-header">
+      <div></div>
+      <div class="notes-title">COMBAT</div>
+      <div></div>
+    </div>
+    <div class="combat-add-buttons">
+      <button class="btn" id="add-combatant-party">+ ADD PARTY</button>
+      <button class="btn" id="add-combatant-ally">+ ADD ALLY</button>
+      <button class="btn magenta" id="add-combatant-enemy">+ ADD ENEMY</button>
+    </div>
+    ${addingCombatant ? renderAddCombatantForm() : ""}
+    ${listHtml}
+    ${combatants.length > 0 ? `
+      <div class="combat-footer">
+        <button class="btn warn" id="roll-all-init">ROLL ALL INITIATIVE</button>
+        <button class="btn success" id="start-combat" ${!canStart ? "disabled" : ""}>START COMBAT</button>
+      </div>
+    ` : ""}
+  `;
+}
+
+function renderSetupRow(c) {
+  const typeBadge = c.type === "enemy" ? "ENEMY" : c.type === "ally" ? "ALLY" : "PARTY";
+  const initDisplay = c.initiative == null
+    ? `<button class="btn tiny" data-roll-init="${c.id}">ROLL +${c.initBonus || 0}</button>`
+    : `<span class="combatant-init">${c.initiative}</span>`;
+  return `
+    <div class="combatant-row ${c.type}">
+      <div class="combatant-init-cell">${initDisplay}</div>
+      <div class="combatant-name-block">
+        <div class="combatant-name">${escapeHtml(c.name)}</div>
+        <div class="combatant-meta">${typeBadge} · HP ${c.maxHp} · AC ${c.ac}${c.type === "enemy" && c.xp ? ` · ${c.xp} XP` : ""}</div>
+      </div>
+      <div class="combatant-actions">
+        <button class="item-delete" data-remove-combatant="${c.id}" title="remove">×</button>
+      </div>
+    </div>
+  `;
+}
+
+// ----- ADD COMBATANT FORMS -----
+function renderAddCombatantForm() {
+  if (addingCombatantType === "party") return renderAddPartyForm();
+  if (addingCombatantType === "ally")  return renderAddAllyForm();
+  if (addingCombatantType === "enemy") return renderAddEnemyForm();
+  return "";
+}
+
+function renderAddPartyForm() {
+  const chars = dmData.party.characters || [];
+  // Hide characters already in combat to avoid duplicates.
+  const inCombatIds = new Set(dmData.combat.combatants.map(c => c.sourceCharacterId).filter(Boolean));
+  const available = chars.filter(c => !inCombatIds.has(c.id));
+  if (chars.length === 0) {
+    return `
+      <div class="combat-form">
+        <div class="form-label" style="color:#ff5577;">No party characters defined yet.</div>
+        <div class="subtle" style="font-size:11px;">Add players in the PARTY tab first.</div>
+        <div class="form-buttons">
+          <button class="btn danger" id="cancel-add-combatant">CANCEL</button>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="combat-form">
+      <div class="form-label">Pick a player character</div>
+      <div class="combat-pick-list">
+        ${available.map(ch => `
+          <button class="combat-pick" data-pick-party="${ch.id}">
+            <span class="pick-name">${escapeHtml(ch.name) || "(unnamed)"}</span>
+            <span class="pick-meta">${escapeHtml(ch.class)}${ch.level ? " · Lv " + ch.level : ""} · DEX ${fmtMod(partyDexMod(ch))}${ch.hp_max ? " · HP " + ch.hp_max : ""}</span>
+          </button>
+        `).join("") || `<div class="subtle" style="font-size:11px; padding:8px;">All party characters are already in combat.</div>`}
+      </div>
+      <div class="form-buttons">
+        <button class="btn danger" id="cancel-add-combatant">CANCEL</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderAddAllyForm() {
+  const allies = dmData.party.allies || [];
+  const inCombatIds = new Set(dmData.combat.combatants.map(c => c.sourceAllyId).filter(Boolean));
+  const available = allies.filter(a => !inCombatIds.has(a.id));
+  if (allies.length === 0) {
+    return `
+      <div class="combat-form">
+        <div class="form-label" style="color:#ff5577;">No allies defined yet.</div>
+        <div class="subtle" style="font-size:11px;">Attach allies to characters in the PARTY tab first.</div>
+        <div class="form-buttons">
+          <button class="btn danger" id="cancel-add-combatant">CANCEL</button>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="combat-form">
+      <div class="form-label">Pick an ally</div>
+      <div class="combat-pick-list">
+        ${available.map(a => {
+          const parent = (dmData.party.characters || []).find(c => c.id === a.characterId);
+          return `
+            <button class="combat-pick" data-pick-ally="${a.id}">
+              <span class="pick-name">${escapeHtml(a.name)}</span>
+              <span class="pick-meta">${parent ? "attached to " + escapeHtml(parent.name) : "no parent"} · init ${fmtMod(a.initiativeMod || 0)} · HP ${a.hp_max} · AC ${a.ac}</span>
+            </button>
+          `;
+        }).join("") || `<div class="subtle" style="font-size:11px; padding:8px;">All allies are already in combat.</div>`}
+      </div>
+      <div class="form-buttons">
+        <button class="btn danger" id="cancel-add-combatant">CANCEL</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderAddEnemyForm() {
+  return `
+    <div class="combat-form">
+      <div class="form-label">Add Enemy</div>
+      <div class="combat-form-grid">
+        <div class="detail-form-row">
+          <label class="form-label">Name <span class="required">*</span></label>
+          <input type="text" id="enemy-name" placeholder="Goblin, Bandit, Drone..." />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">Quantity</label>
+          <input type="number" min="1" max="20" id="enemy-qty" value="1" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">CR (auto-fills XP)</label>
+          <select id="enemy-cr">
+            <option value="">— none —</option>
+            ${CR_OPTIONS.map(cr => `<option value="${cr}">${cr}</option>`).join("")}
+          </select>
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">XP each</label>
+          <input type="number" min="0" id="enemy-xp" value="0" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">HP Max</label>
+          <input type="number" min="1" id="enemy-hp" value="10" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">AC</label>
+          <input type="number" min="0" id="enemy-ac" value="10" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">Init Bonus</label>
+          <input type="number" id="enemy-init-bonus" value="0" />
+        </div>
+        <div class="detail-form-row">
+          <label class="form-label">Enemy Type (for loot)</label>
+          <select id="enemy-type">
+            <option value="">— none —</option>
+            ${ENEMY_TYPES.map(t => `<option value="${t.id}">${t.label}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="form-buttons">
+        <button class="btn" id="save-enemy" disabled>ADD ENEMY</button>
+        <button class="btn danger" id="cancel-add-combatant">CANCEL</button>
+      </div>
+    </div>
+  `;
+}
+
+// ----- ACTIVE MODE -----
+function renderCombatActive() {
+  const combat = dmData.combat;
+  const sorted = sortCombatants(combat.combatants);
+  const currentId = sorted[combat.currentTurnIdx]?.id;
+  const rowsHtml = sorted.map(c => renderActiveRow(c, c.id === currentId)).join("");
+  return `
+    <div class="combat-active-header">
+      <div class="round-display">ROUND <span class="round-num">${combat.round}</span></div>
+      <div class="combat-controls">
+        <button class="btn tiny" id="prev-turn">PREV</button>
+        <button class="btn tiny" id="next-turn">NEXT</button>
+        <button class="btn tiny" id="add-mid-combat">+ ADD</button>
+        <button class="btn ${confirmingFinishCombat ? "magenta" : "danger"}" id="finish-combat">${confirmingFinishCombat ? "CONFIRM FINISH" : "FINISH"}</button>
+      </div>
+    </div>
+    ${addingCombatant ? renderAddCombatantForm() : ""}
+    <div class="combat-list">${rowsHtml}</div>
+  `;
+}
+
+function renderActiveRow(c, isCurrent) {
+  const hpRatio = c.maxHp > 0 ? c.currentHp / c.maxHp : 0;
+  const hpClass = c.currentHp === 0 ? "critical" : hpRatio <= 0.25 ? "critical" : hpRatio <= 0.5 ? "low" : "";
+  const isDead = c.type === "enemy" && c.currentHp === 0;
+  const downedPC = (c.type === "party" || c.type === "ally") && c.currentHp === 0;
+  const conditionsHtml = (c.conditions || []).map(cond => `
+    <span class="condition-pill" data-remove-condition="${c.id}|${cond.id}" title="click to remove">${cond.name}</span>
+  `).join("");
+  const conditionPicker = conditionPickerCombatantId === c.id ? `
+    <div class="condition-picker">
+      ${CONDITIONS.map(cond => `<button class="condition-option" data-add-condition="${c.id}|${cond}">${cond}</button>`).join("")}
+    </div>
+  ` : "";
+  const deathSavesHtml = downedPC ? renderDeathSaves(c) : "";
+
+  return `
+    <div class="combatant-row ${c.type} ${isCurrent ? "current" : ""} ${isDead ? "dead" : ""}">
+      <div class="combatant-init-cell">
+        <span class="combatant-init">${c.initiative ?? "?"}</span>
+      </div>
+      <div class="combatant-name-block">
+        <div class="combatant-name">${escapeHtml(c.name)}${isDead ? ` <span class="dead-tag">DEFEATED</span>` : ""}${downedPC ? ` <span class="dead-tag" style="color:#fbbf24;">DOWNED</span>` : ""}</div>
+        <div class="combatant-meta">
+          AC ${c.ac} ${c.type === "enemy" && c.xp ? `· ${c.xp} XP` : ""}
+          ${c.attachedTo ? `· attached to ${escapeHtml(combatantById(c.attachedTo)?.name || "?")}` : ""}
+        </div>
+        ${conditionsHtml ? `<div class="conditions-row">${conditionsHtml}</div>` : ""}
+        ${deathSavesHtml}
+        ${conditionPicker}
+      </div>
+      <div class="combatant-hp-cell">
+        <span class="combatant-hp ${hpClass}">${c.currentHp}/${c.maxHp}</span>
+      </div>
+      <div class="combatant-actions">
+        <input class="hp-input" type="number" data-hp-amount="${c.id}" placeholder="0" />
+        <button class="btn tiny danger" data-damage="${c.id}">DMG</button>
+        <button class="btn tiny success" data-heal="${c.id}">HEAL</button>
+        <button class="btn tiny" data-toggle-conditions="${c.id}">+ CND</button>
+        <button class="item-delete" data-remove-combatant="${c.id}" title="remove">×</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDeathSaves(c) {
+  const ds = c.deathSaves || { successes: 0, failures: 0 };
+  const dot = (filled, type) => `<span class="death-dot ${type} ${filled ? "filled" : ""}"></span>`;
+  return `
+    <div class="death-saves">
+      <span class="death-label">Death Saves:</span>
+      <div class="death-row">
+        <span class="death-row-label">S</span>
+        <button class="death-cluster" data-death-success="${c.id}">
+          ${dot(ds.successes >= 1, "success")}${dot(ds.successes >= 2, "success")}${dot(ds.successes >= 3, "success")}
+        </button>
+      </div>
+      <div class="death-row">
+        <span class="death-row-label">F</span>
+        <button class="death-cluster" data-death-failure="${c.id}">
+          ${dot(ds.failures >= 1, "failure")}${dot(ds.failures >= 2, "failure")}${dot(ds.failures >= 3, "failure")}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ----- FINISHED MODE (post-combat summary + loot roll) -----
+function renderCombatFinished() {
+  const combat = dmData.combat;
+  const xp = combat.lastEncounterXp || 0;
+  const partySize = combat.combatants.filter(c => c.type === "party").length;
+  const xpPer = partySize > 0 ? Math.floor(xp / partySize) : xp;
+  const types = combat.defeatedEnemyTypes;
+
+  let lootResultsHtml = "";
+  if (Array.isArray(combat.postCombatLoot)) {
+    if (combat.postCombatLoot.length === 0) {
+      lootResultsHtml = `<div class="loot-empty">No items match the defeated enemy types.</div>`;
+    } else {
+      lootResultsHtml = `<div class="loot-results-grid">${combat.postCombatLoot.map(item => `
+        <div class="loot-card">
+          <div class="loot-name">${escapeHtml(item.name)}</div>
+          <div class="loot-rarity ${item.rarity}">${formatRarity(item.rarity)}</div>
+          <div class="loot-price">${item.rolledPrice} cr</div>
+        </div>
+      `).join("")}</div>`;
+    }
+  }
+
+  return `
+    <div class="notes-header">
+      <div></div>
+      <div class="notes-title">COMBAT ENDED</div>
+      <div></div>
+    </div>
+
+    <div class="combat-summary">
+      <div class="summary-stat">
+        <div class="summary-label">TOTAL XP</div>
+        <div class="summary-value">${xp}</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-label">PER PLAYER</div>
+        <div class="summary-value">${xpPer}</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-label">PARTY SIZE</div>
+        <div class="summary-value">${partySize}</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-label">ROUNDS</div>
+        <div class="summary-value">${combat.round}</div>
+      </div>
+    </div>
+
+    ${types.length > 0 ? `
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-header">POST-COMBAT LOOT</div>
+        <div class="subtle" style="font-size:11px; margin-bottom:10px;">
+          Defeated enemy types: ${types.map(t => `<strong style="color:#ff2a8a;">${escapeHtml(t)}</strong>`).join(", ")}
+        </div>
+        <div class="loot-controls" style="border:none; padding:0; margin-bottom:12px;">
+          <div class="loot-control">
+            <label class="form-label">Count</label>
+            <input type="number" id="post-loot-count" min="1" max="100" value="${postCombatLootCount}" />
+          </div>
+          <div class="loot-control loot-control-buttons">
+            <button class="btn" id="roll-post-loot">${combat.postCombatLoot === null ? "ROLL LOOT" : "REROLL"}</button>
+          </div>
+        </div>
+        ${lootResultsHtml}
+      </div>
+    ` : `
+      <div class="subtle" style="text-align:center; margin-top:24px; font-size:12px;">No tagged enemies defeated — no loot to roll.</div>
+    `}
+
+    <div class="combat-footer" style="margin-top:24px;">
+      <button class="btn ${confirmingResetCombat ? "magenta" : "danger"}" id="reset-combat">${confirmingResetCombat ? "CONFIRM RESET" : "NEW COMBAT (RESET)"}</button>
+    </div>
+  `;
+}
+
+// ============================================================
+// COMBAT WIRING
+// ============================================================
+
+function wireCombat() {
+  // ===== ADD COMBATANT (top-level buttons) =====
+  ["party", "ally", "enemy"].forEach(t => {
+    const btn = document.getElementById(`add-combatant-${t}`);
+    if (btn) {
+      btn.addEventListener("click", () => {
+        addingCombatant = true;
+        addingCombatantType = t;
+        renderCombat();
+        if (t === "enemy") {
+          const inp = document.getElementById("enemy-name");
+          if (inp) {
+            inp.focus();
+            inp.addEventListener("input", () => {
+              const save = document.getElementById("save-enemy");
+              if (save) save.disabled = inp.value.trim().length === 0;
+            });
+          }
+        }
+      });
+    }
+  });
+
+  const cancelAdd = document.getElementById("cancel-add-combatant");
+  if (cancelAdd) cancelAdd.addEventListener("click", () => {
+    addingCombatant = false;
+    addingCombatantType = null;
+    renderCombat();
+  });
+
+  // Mid-combat add (active mode)
+  const midAdd = document.getElementById("add-mid-combat");
+  if (midAdd) midAdd.addEventListener("click", () => {
+    addingCombatant = true;
+    addingCombatantType = "enemy";
+    renderCombat();
+    const inp = document.getElementById("enemy-name");
+    if (inp) {
+      inp.focus();
+      inp.addEventListener("input", () => {
+        const save = document.getElementById("save-enemy");
+        if (save) save.disabled = inp.value.trim().length === 0;
+      });
+    }
+  });
+
+  // Pick party member from list
+  document.querySelectorAll("[data-pick-party]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.pickParty;
+      const ch = dmData.party.characters.find(c => c.id === id);
+      if (!ch) return;
+      const dexMod = partyDexMod(ch);
+      dmData.combat.combatants.push({
+        id: "cb" + Date.now() + Math.random().toString(36).slice(2, 7),
+        type: "party",
+        name: ch.name,
+        sourceCharacterId: ch.id,
+        sourceAllyId: null,
+        maxHp: ch.hp_max || 10,
+        currentHp: ch.hp_max || 10,
+        ac: ch.ac || 10,
+        initiative: null,
+        initBonus: dexMod,
+        attachedTo: null,
+        deathSaves: { successes: 0, failures: 0 },
+        cr: null, xp: 0, enemyType: null, dead: false,
+        conditions: [],
+      });
+      saveDmData();
+      addingCombatant = false;
+      addingCombatantType = null;
+      renderCombat();
+    });
+  });
+
+  // Pick ally from list
+  document.querySelectorAll("[data-pick-ally]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.pickAlly;
+      const a = dmData.party.allies.find(x => x.id === id);
+      if (!a) return;
+      // If parent character is in combat, attach to them.
+      const parentCombatant = dmData.combat.combatants.find(
+        c => c.type === "party" && c.sourceCharacterId === a.characterId
+      );
+      dmData.combat.combatants.push({
+        id: "cb" + Date.now() + Math.random().toString(36).slice(2, 7),
+        type: "ally",
+        name: a.name,
+        sourceCharacterId: null,
+        sourceAllyId: a.id,
+        maxHp: a.hp_max || 1,
+        currentHp: a.hp_max || 1,
+        ac: a.ac || 10,
+        initiative: parentCombatant?.initiative ?? null,
+        initBonus: a.initiativeMod || 0,
+        attachedTo: parentCombatant?.id || null,
+        deathSaves: { successes: 0, failures: 0 },
+        cr: null, xp: 0, enemyType: null, dead: false,
+        conditions: [],
+      });
+      saveDmData();
+      addingCombatant = false;
+      addingCombatantType = null;
+      renderCombat();
+    });
+  });
+
+  // Save new enemy (with quantity)
+  const saveEnemy = document.getElementById("save-enemy");
+  if (saveEnemy) {
+    saveEnemy.addEventListener("click", () => {
+      const name = (document.getElementById("enemy-name").value || "").trim();
+      if (!name) return;
+      const qty = clamp(Number(document.getElementById("enemy-qty").value) || 1, 1, 20);
+      const cr = document.getElementById("enemy-cr").value || null;
+      const xp = clamp(Number(document.getElementById("enemy-xp").value) || 0, 0, 999999);
+      const hp = clamp(Number(document.getElementById("enemy-hp").value) || 10, 1, 9999);
+      const ac = clamp(Number(document.getElementById("enemy-ac").value) || 10, 0, 99);
+      const initBonus = clamp(Number(document.getElementById("enemy-init-bonus").value) || 0, -10, 30);
+      const enemyType = document.getElementById("enemy-type").value || null;
+      for (let i = 0; i < qty; i++) {
+        const suffix = qty > 1 ? ` ${i + 1}` : "";
+        // Auto-roll initiative if combat is active so the new combatant slots in.
+        const initiative = dmData.combat.active ? rollD20() + initBonus : null;
+        dmData.combat.combatants.push({
+          id: "cb" + Date.now() + Math.random().toString(36).slice(2, 7),
+          type: "enemy",
+          name: name + suffix,
+          sourceCharacterId: null,
+          sourceAllyId: null,
+          maxHp: hp,
+          currentHp: hp,
+          ac, initiative,
+          initBonus,
+          attachedTo: null,
+          deathSaves: { successes: 0, failures: 0 },
+          cr, xp, enemyType, dead: false,
+          conditions: [],
+        });
+      }
+      saveDmData();
+      addingCombatant = false;
+      addingCombatantType = null;
+      renderCombat();
+    });
+  }
+
+  // CR change auto-fills XP
+  const crSelect = document.getElementById("enemy-cr");
+  if (crSelect) {
+    crSelect.addEventListener("change", e => {
+      const xp = CR_TO_XP[e.target.value];
+      if (xp !== undefined) {
+        const xpInput = document.getElementById("enemy-xp");
+        if (xpInput) xpInput.value = xp;
+      }
+    });
+  }
+
+  // ===== INITIATIVE =====
+  document.querySelectorAll("[data-roll-init]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const c = combatantById(btn.dataset.rollInit);
+      if (!c) return;
+      c.initiative = rollD20() + (c.initBonus || 0);
+      saveDmData();
+      renderCombat();
+    });
+  });
+
+  const rollAll = document.getElementById("roll-all-init");
+  if (rollAll) rollAll.addEventListener("click", () => {
+    dmData.combat.combatants.forEach(c => {
+      if (c.attachedTo) {
+        // attached creatures take their parent's init
+        const parent = combatantById(c.attachedTo);
+        c.initiative = parent ? parent.initiative : rollD20() + (c.initBonus || 0);
+      } else {
+        c.initiative = rollD20() + (c.initBonus || 0);
+      }
+    });
+    // Re-sync attached after parents rolled
+    dmData.combat.combatants.forEach(c => {
+      if (c.attachedTo) {
+        const parent = combatantById(c.attachedTo);
+        if (parent && parent.initiative != null) c.initiative = parent.initiative;
+      }
+    });
+    saveDmData();
+    renderCombat();
+  });
+
+  // ===== START COMBAT =====
+  const start = document.getElementById("start-combat");
+  if (start) start.addEventListener("click", () => {
+    // Anyone without an initiative gets one rolled now.
+    dmData.combat.combatants.forEach(c => {
+      if (c.initiative == null) c.initiative = rollD20() + (c.initBonus || 0);
+    });
+    dmData.combat.active = true;
+    dmData.combat.round = 1;
+    dmData.combat.currentTurnIdx = 0;
+    saveDmData();
+    renderCombat();
+  });
+
+  // ===== TURN ADVANCE =====
+  const next = document.getElementById("next-turn");
+  if (next) next.addEventListener("click", () => {
+    const sorted = sortCombatants(dmData.combat.combatants);
+    if (sorted.length === 0) return;
+    const newIdx = (dmData.combat.currentTurnIdx + 1) % sorted.length;
+    if (newIdx === 0) dmData.combat.round += 1;
+    dmData.combat.currentTurnIdx = newIdx;
+    saveDmData();
+    renderCombat();
+  });
+
+  const prev = document.getElementById("prev-turn");
+  if (prev) prev.addEventListener("click", () => {
+    const sorted = sortCombatants(dmData.combat.combatants);
+    if (sorted.length === 0) return;
+    let newIdx = dmData.combat.currentTurnIdx - 1;
+    if (newIdx < 0) {
+      newIdx = sorted.length - 1;
+      if (dmData.combat.round > 1) dmData.combat.round -= 1;
+    }
+    dmData.combat.currentTurnIdx = newIdx;
+    saveDmData();
+    renderCombat();
+  });
+
+  // ===== HP DAMAGE / HEAL =====
+  document.querySelectorAll("[data-damage]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.damage;
+      const c = combatantById(id);
+      if (!c) return;
+      const inp = document.querySelector(`input[data-hp-amount="${id}"]`);
+      const amt = Math.max(0, Number(inp?.value) || 0);
+      if (amt === 0) return;
+      c.currentHp = Math.max(0, c.currentHp - amt);
+      if (c.type === "enemy" && c.currentHp === 0) c.dead = true;
+      if (inp) inp.value = "";
+      saveDmData();
+      renderCombat();
+    });
+  });
+  document.querySelectorAll("[data-heal]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.heal;
+      const c = combatantById(id);
+      if (!c) return;
+      const inp = document.querySelector(`input[data-hp-amount="${id}"]`);
+      const amt = Math.max(0, Number(inp?.value) || 0);
+      if (amt === 0) return;
+      c.currentHp = Math.min(c.maxHp, c.currentHp + amt);
+      if (c.currentHp > 0) {
+        c.dead = false;
+        // Healing a downed PC resets their death saves.
+        if (c.type !== "enemy") c.deathSaves = { successes: 0, failures: 0 };
+      }
+      if (inp) inp.value = "";
+      saveDmData();
+      renderCombat();
+    });
+  });
+
+  // ===== CONDITIONS =====
+  document.querySelectorAll("[data-toggle-conditions]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.toggleConditions;
+      conditionPickerCombatantId = conditionPickerCombatantId === id ? null : id;
+      renderCombat();
+    });
+  });
+  document.querySelectorAll("[data-add-condition]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const [id, name] = btn.dataset.addCondition.split("|");
+      const c = combatantById(id);
+      if (!c) return;
+      c.conditions = c.conditions || [];
+      // Avoid duplicates of the same condition.
+      if (!c.conditions.find(x => x.name === name)) {
+        c.conditions.push({
+          id: "cnd" + Date.now() + Math.random().toString(36).slice(2, 7),
+          name,
+          expiresOnId: null,
+          expiresAtRound: null,
+        });
+      }
+      conditionPickerCombatantId = null;
+      saveDmData();
+      renderCombat();
+    });
+  });
+  document.querySelectorAll("[data-remove-condition]").forEach(el => {
+    el.addEventListener("click", () => {
+      const [cid, condId] = el.dataset.removeCondition.split("|");
+      const c = combatantById(cid);
+      if (!c) return;
+      c.conditions = (c.conditions || []).filter(x => x.id !== condId);
+      saveDmData();
+      renderCombat();
+    });
+  });
+
+  // ===== DEATH SAVES =====
+  document.querySelectorAll("[data-death-success]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const c = combatantById(btn.dataset.deathSuccess);
+      if (!c) return;
+      c.deathSaves = c.deathSaves || { successes: 0, failures: 0 };
+      // Cycle 0 → 1 → 2 → 3 → 0
+      c.deathSaves.successes = (c.deathSaves.successes + 1) % 4;
+      saveDmData();
+      renderCombat();
+    });
+  });
+  document.querySelectorAll("[data-death-failure]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const c = combatantById(btn.dataset.deathFailure);
+      if (!c) return;
+      c.deathSaves = c.deathSaves || { successes: 0, failures: 0 };
+      c.deathSaves.failures = (c.deathSaves.failures + 1) % 4;
+      saveDmData();
+      renderCombat();
+    });
+  });
+
+  // ===== REMOVE COMBATANT =====
+  document.querySelectorAll("[data-remove-combatant]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.removeCombatant;
+      dmData.combat.combatants = dmData.combat.combatants.filter(c => c.id !== id);
+      // Detach anyone attached to this combatant.
+      dmData.combat.combatants.forEach(c => {
+        if (c.attachedTo === id) c.attachedTo = null;
+      });
+      // Adjust currentTurnIdx if it points past the new length.
+      if (dmData.combat.currentTurnIdx >= dmData.combat.combatants.length) {
+        dmData.combat.currentTurnIdx = 0;
+      }
+      saveDmData();
+      renderCombat();
+    });
+  });
+
+  // ===== FINISH COMBAT (click-to-confirm) =====
+  const finish = document.getElementById("finish-combat");
+  if (finish) finish.addEventListener("click", () => {
+    if (!confirmingFinishCombat) {
+      confirmingFinishCombat = true;
+      renderCombat();
+      return;
+    }
+    confirmingFinishCombat = false;
+    const enemies = dmData.combat.combatants.filter(c => c.type === "enemy");
+    const defeated = enemies.filter(c => c.dead || c.currentHp === 0);
+    dmData.combat.lastEncounterXp = defeated.reduce((sum, e) => sum + (Number(e.xp) || 0), 0);
+    dmData.combat.defeatedEnemyTypes = Array.from(new Set(defeated.map(e => e.enemyType).filter(Boolean)));
+    dmData.combat.active = false;
+    dmData.combat.finished = true;
+    dmData.combat.postCombatLoot = null;
+    saveDmData();
+    renderCombat();
+  });
+
+  // ===== POST-COMBAT LOOT =====
+  const lootCountEl = document.getElementById("post-loot-count");
+  if (lootCountEl) lootCountEl.addEventListener("input", e => {
+    postCombatLootCount = clamp(Number(e.target.value) || 1, 1, 100);
+  });
+  const rollLootBtn = document.getElementById("roll-post-loot");
+  if (rollLootBtn) rollLootBtn.addEventListener("click", () => {
+    dmData.combat.postCombatLoot = rollPostCombatLoot(
+      dmData.combat.defeatedEnemyTypes, postCombatLootCount
+    );
+    saveDmData();
+    renderCombat();
+  });
+
+  // ===== RESET COMBAT (click-to-confirm) =====
+  const reset = document.getElementById("reset-combat");
+  if (reset) reset.addEventListener("click", () => {
+    if (!confirmingResetCombat) {
+      confirmingResetCombat = true;
+      renderCombat();
+      return;
+    }
+    confirmingResetCombat = false;
+    dmData.combat = createDefaultCombat();
+    saveDmData();
+    renderCombat();
+  });
+}
+
+// Rolls N items from items.js where the item's `loot` array overlaps any of
+// the given enemy types. Same price-variance formula as the regular Loot tab.
+function rollPostCombatLoot(enemyTypes, count) {
+  if (typeof items === "undefined" || !Array.isArray(items)) return [];
+  if (!enemyTypes || enemyTypes.length === 0) return [];
+  const types = new Set(enemyTypes);
+  const pool = items.filter(i =>
+    Array.isArray(i.loot) && i.loot.some(t => types.has(t))
+  );
+  if (pool.length === 0) return [];
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    const item = pool[Math.floor(Math.random() * pool.length)];
+    const rolledPrice = item.price * (0.75 + Math.random() * 0.25);
+    result.push({
+      name: item.name,
+      rarity: item.rarity,
+      rolledPrice: Math.round(rolledPrice),
+    });
+  }
+  return result;
 }
 
 // ============================================================
