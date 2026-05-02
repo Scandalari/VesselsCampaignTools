@@ -1,0 +1,78 @@
+@echo off
+setlocal enabledelayedexpansion
+
+REM ===== Kizuna Tablet build script =====
+REM
+REM   build.bat              -> rebuild with the current version
+REM   build.bat 1.1.0        -> bump version (both app.py + installer.iss) then rebuild
+REM
+REM Output: installer-output\KizunaTablet-Setup.exe
+
+cd /d "%~dp0"
+
+set "NEWVER=%~1"
+
+if not "%NEWVER%"=="" (
+    echo %NEWVER%| findstr /R /C:"^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul
+    if errorlevel 1 (
+        echo.
+        echo ERROR: Version must be in the form X.Y.Z, e.g. 1.1.0
+        echo.
+        exit /b 1
+    )
+    echo.
+    echo === Bumping version to %NEWVER% ===
+    REM PS 5.1's Set-Content -Encoding UTF8 writes a BOM, which Python tolerates
+    REM but ast/linters don't. Use [IO.File]::WriteAllText with a no-BOM encoding.
+    powershell -NoProfile -Command "$utf8=New-Object System.Text.UTF8Encoding $false; $c=(Get-Content -Raw -Encoding UTF8 'app.py') -replace '__version__ = \".*\"','__version__ = \"%NEWVER%\"'; [IO.File]::WriteAllText((Resolve-Path 'app.py'), $c, $utf8)"
+    if errorlevel 1 goto :fail_bump
+    powershell -NoProfile -Command "$utf8=New-Object System.Text.UTF8Encoding $false; $c=(Get-Content -Raw -Encoding UTF8 'installer.iss') -replace '#define MyAppVersion \".*\"','#define MyAppVersion \"%NEWVER%\"'; [IO.File]::WriteAllText((Resolve-Path 'installer.iss'), $c, $utf8)"
+    if errorlevel 1 goto :fail_bump
+    echo Bumped app.py and installer.iss.
+)
+
+echo.
+echo === Installing/updating Python build deps ===
+python -m pip install --quiet --disable-pip-version-check -r requirements.txt
+if errorlevel 1 (
+    echo ERROR: pip install failed. Check that Python is installed and on PATH.
+    exit /b 1
+)
+
+set "ISCC="
+if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if "%ISCC%"=="" (
+    echo.
+    echo ERROR: Inno Setup 6 not found.
+    echo Download and install from: https://jrsoftware.org/isinfo.php
+    exit /b 1
+)
+
+echo.
+echo === Bundling Python app (PyInstaller) ===
+REM TODO: add --icon app.ico once a real icon exists
+python -m PyInstaller --noconfirm --windowed --name KizunaTablet --add-data "web;web" app.py
+if errorlevel 1 (
+    echo ERROR: PyInstaller failed.
+    exit /b 1
+)
+
+echo.
+echo === Building installer (Inno Setup) ===
+"%ISCC%" installer.iss
+if errorlevel 1 (
+    echo ERROR: Inno Setup compile failed.
+    exit /b 1
+)
+
+echo.
+echo ============================================================
+echo Done.
+echo Installer: %CD%\installer-output\KizunaTablet-Setup.exe
+echo ============================================================
+exit /b 0
+
+:fail_bump
+echo ERROR: Failed to update version strings.
+exit /b 1

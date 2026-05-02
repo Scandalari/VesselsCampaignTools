@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.spec
+
+build/
+dist/
+installer-output/
+
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
