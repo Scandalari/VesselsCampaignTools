@@ -382,12 +382,57 @@ function wireModeSwitch() {
 // DASHBOARD RENDER
 // ============================================================
 
+// Re-rendering on every keystroke blows focus out of inputs (the element under
+// the user's cursor literally gets replaced). Capture which field had focus +
+// where the caret was, then restore both after innerHTML swap. Without this,
+// typing a multi-digit ability score becomes impossible.
+function captureFocus(container) {
+  const active = document.activeElement;
+  if (!active || !container.contains(active)) return null;
+  if (!["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName)) return null;
+  const info = {
+    tag: active.tagName,
+    id: active.id || null,
+    ab: active.dataset?.ab || null,
+    prof: active.dataset?.prof || null,
+    field: active.dataset?.field || null,
+    actionId: active.closest("[data-action-id]")?.dataset?.actionId || null,
+  };
+  if (active.tagName !== "SELECT") {
+    info.selectionStart = active.selectionStart;
+    info.selectionEnd = active.selectionEnd;
+  }
+  return info;
+}
+
+function restoreFocus(container, info) {
+  if (!info) return;
+  let el = null;
+  if (info.id) el = container.querySelector("#" + CSS.escape(info.id));
+  else if (info.actionId && info.field) {
+    el = container.querySelector(
+      `[data-action-id="${info.actionId}"] [data-field="${info.field}"]`
+    );
+  } else if (info.ab) {
+    el = container.querySelector(`[data-ab="${info.ab}"]`);
+  } else if (info.prof) {
+    el = container.querySelector(`[data-prof="${info.prof}"]`);
+  }
+  if (!el) return;
+  el.focus();
+  if (info.tag !== "SELECT" && info.selectionStart != null) {
+    try { el.setSelectionRange(info.selectionStart, info.selectionEnd); } catch (e) {}
+  }
+}
+
 function renderDashboard() {
   const dash = document.getElementById("dashboard");
   if (!dash) return;
+  const focus = captureFocus(dash);
   dash.classList.toggle("config-mode", configMode);
   dash.innerHTML = renderDashboardHTML(character);
   wireDashboard();
+  restoreFocus(dash, focus);
 }
 
 function renderDashboardHTML(c) {
@@ -865,10 +910,12 @@ async function onPortraitClick() {
 }
 
 function wireConfigInputs() {
-  // Identity
-  bindInput("cfg-name", "input", v => character.name = v);
-  bindInput("cfg-origin", "input", v => character.origin = v);
-  bindInput("cfg-subclass", "input", v => character.subclass = v);
+  // Identity. Name triggers a rerender so the portrait placeholder initial
+  // updates as you type; origin/subclass don't show anywhere else in config
+  // mode, so they just save without re-rendering (cheaper).
+  bindInput("cfg-name", "input", v => { character.name = v; saveAndRerender(); });
+  bindInput("cfg-origin", "input", v => { character.origin = v; saveCharacter(); });
+  bindInput("cfg-subclass", "input", v => { character.subclass = v; saveCharacter(); });
   bindInput("cfg-class", "change", v => {
     character.class = v;
     rebuildSpellSlots(character);
@@ -889,8 +936,8 @@ function wireConfigInputs() {
     });
   });
 
-  // Speed
-  bindInput("cfg-speed", "input", v => { character.speed = Math.max(0, Number(v) || 0); });
+  // Speed (no rerender — only the input itself displays this in config mode)
+  bindInput("cfg-speed", "input", v => { character.speed = Math.max(0, Number(v) || 0); saveCharacter(); });
 
   // HP max
   bindInput("cfg-hp-max", "input", v => {
