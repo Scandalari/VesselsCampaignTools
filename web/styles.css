@@ -1973,16 +1973,26 @@ html, body {
   text-align: right;
 }
 
-/* ----- multiplier toggles + END SESSION row ----- */
+/* ----- XP controls block (lives at top of right column now) ----- */
 .dm-xp-controls {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #1a1a2e;
+  margin-bottom: 4px;
+}
+.dm-xp-controls-top {
+  display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 8px;
 }
 .dm-xp-toggles {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 .dm-toggle {
   display: inline-flex;
@@ -2029,8 +2039,6 @@ html, body {
   letter-spacing: 0.05em;
 }
 .dm-xp-pending {
-  flex: 1;
-  text-align: right;
   font-family: "Consolas", monospace;
   font-size: 12px;
   font-weight: 700;
@@ -2063,20 +2071,22 @@ html, body {
 /* ----- 3-column grid ----- */
 .dm-dash-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(360px, 1.4fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(260px, 1fr) minmax(360px, 1.5fr) minmax(260px, 1fr);
   gap: 14px;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: none;
 }
-.dm-dash-grid::-webkit-scrollbar { display: none; }
 .dm-dash-col {
   display: flex;
   flex-direction: column;
   gap: 14px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
 }
+.dm-dash-col::-webkit-scrollbar { display: none; }
+.dm-dash-col.middle { gap: 12px; }
 
 /* ----- preset groups ----- */
 .dm-preset-group {
@@ -2102,14 +2112,14 @@ html, body {
   background: #0f0f1a;
   border: 1px solid #1a1a2e;
   color: #00d4e0;
-  padding: 14px 8px;
+  padding: 10px 6px;
   cursor: pointer;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  min-height: 70px;
+  gap: 2px;
+  min-height: 56px;
   font-family: inherit;
   transition: border-color 120ms, box-shadow 120ms, background 120ms;
 }
@@ -2290,4 +2300,183 @@ html, body {
   outline: none;
   border-color: #00d4e0;
   box-shadow: 0 0 6px rgba(0, 212, 224, 0.3);
+}
+
+/* ----- middle column (player cards + scratchpad) ----- */
+.dm-player-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.dm-scratchpad-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+.dm-scratchpad-label {
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 700;
+  color: #ff2a8a;
+  letter-spacing: 0.18em;
+  text-align: center;
+  text-shadow: 0 0 6px rgba(255, 42, 138, 0.3);
+}
+.dm-scratchpad {
+  flex: 1;
+  min-height: 80px;
+  background: #0a0a14;
+  border: 1px solid #1a1a2e;
+  color: #e6e0f0;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px;
+  resize: none;
+  scrollbar-width: none;
+}
+.dm-scratchpad::-webkit-scrollbar { display: none; }
+.dm-scratchpad:focus {
+  outline: none;
+  border-color: #00d4e0;
+  box-shadow: 0 0 8px rgba(0, 212, 224, 0.25);
+}
+
+/* ----- quest tracker (left column) ----- */
+.dm-quest-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dm-quest-header {
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 700;
+  color: #ff2a8a;
+  letter-spacing: 0.18em;
+  text-align: center;
+  text-shadow: 0 0 6px rgba(255, 42, 138, 0.3);
+}
+.dm-quest-empty {
+  border: 1px dashed #1a1a2e;
+  color: #8a7a9a;
+  padding: 18px;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+}
+.dm-quest-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dm-quest-card {
+  background: #0f0f1a;
+  border: 1px solid #1a1a2e;
+  border-left: 3px solid #b54ad6;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dm-quest-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 6px;
+}
+.dm-quest-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #e6e0f0;
+  letter-spacing: 0.04em;
+  word-break: break-word;
+  flex: 1;
+}
+.dm-quest-objective {
+  font-size: 12px;
+  color: #8a7a9a;
+  line-height: 1.4;
+  word-break: break-word;
+}
+.dm-quest-reward {
+  font-size: 11px;
+  color: #fbbf24;
+  letter-spacing: 0.04em;
+  font-family: "Consolas", monospace;
+}
+.dm-quest-reward-label {
+  color: #8a7a9a;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  margin-right: 4px;
+}
+.dm-quest-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 4px;
+}
+.dm-quest-actions-right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: auto;
+}
+.dm-quest-repeat {
+  font-size: 9px;
+  font-weight: 700;
+  color: #b54ad6;
+  letter-spacing: 0.18em;
+  border: 1px solid #b54ad6;
+  padding: 2px 6px;
+  background: rgba(181, 74, 214, 0.06);
+}
+.dm-quest-form {
+  background: #0f0f1a;
+  border: 1px solid #b54ad6;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dm-quest-form .form-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.dm-quest-form .form-buttons .btn { flex: 1; }
+.dm-quest-form textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+.dm-quest-repeat-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #b54ad6;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+.dm-quest-repeat-check input { accent-color: #b54ad6; cursor: pointer; }
+.btn.quest-add-btn {
+  width: 100%;
+}
+
+.btn.tiny.success {
+  border-color: #4ade80;
+  color: #4ade80;
+}
+.btn.tiny.success:hover {
+  background: rgba(74, 222, 128, 0.1);
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.3);
+}
+.btn.tiny.success.confirming {
+  background: rgba(74, 222, 128, 0.15);
 }

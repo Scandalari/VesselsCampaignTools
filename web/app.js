@@ -173,6 +173,14 @@ let postCombatLootCount = 10;
 // so the DM can see where the points just landed.
 let xpPulse = 0;
 
+// Quest tracker UI state. addingQuest gates the inline add form; only one
+// quest can be in edit mode at a time. Confirmation flags gate the destructive
+// bits (delete + complete-when-non-repeatable).
+let addingQuest = false;
+let editingQuestId = null;
+let confirmingQuestDeleteId = null;
+let confirmingQuestCompleteId = null;
+
 // Standard 5e XP-by-level thresholds (PHB). Level = highest threshold <= total.
 // Index 0 = level 1 (no XP needed). Capped at 20.
 const XP_THRESHOLDS = [
@@ -300,6 +308,8 @@ function createDefaultDmData() {
     party: { characters: [], allies: [] },
     combat: createDefaultCombat(),
     xp: createDefaultXp(),
+    quests: [],
+    scratchpad: "",
   };
 }
 
@@ -359,6 +369,9 @@ async function loadDmData() {
   if (typeof dmData.xp.pending !== "number") dmData.xp.pending = 0;
   if (typeof dmData.xp.recapBonus !== "boolean") dmData.xp.recapBonus = false;
   if (typeof dmData.xp.fullParty !== "boolean") dmData.xp.fullParty = false;
+  // v1.0.12 → v1.0.13: quest tracker + persistent scratchpad.
+  if (!Array.isArray(dmData.quests)) dmData.quests = [];
+  if (typeof dmData.scratchpad !== "string") dmData.scratchpad = "";
 }
 
 async function saveDmData() {
@@ -2118,9 +2131,9 @@ function renderDmDashboardHTML() {
   const info = xpLevelInfo(xp.total);
   const pendingSign = xp.pending >= 0 ? "+" : "";
   const pendingClass = xp.pending > 0 ? "positive" : xp.pending < 0 ? "negative" : "zero";
-  const endSessionLabel = xp.pending !== 0
-    ? `END SESSION  (${pendingSign}${fmtXp(xp.pending)})`
-    : `END SESSION`;
+  const pendingLabel = xp.pending !== 0
+    ? `${pendingSign}${fmtXp(xp.pending)} pending`
+    : "no pending xp";
 
   return `
     <div class="dm-dash">
@@ -2133,34 +2146,160 @@ function renderDmDashboardHTML() {
         <div class="dm-xp-next">${info.maxed ? "MAX" : fmtXp(info.next)}</div>
       </div>
 
-      <div class="dm-xp-controls">
-        <div class="dm-xp-toggles">
-          <button class="dm-toggle ${xp.recapBonus ? "on" : ""}" data-xp-toggle="recapBonus">
-            <span class="dm-toggle-dot"></span>RECAP
-          </button>
-          <button class="dm-toggle ${xp.fullParty ? "on" : ""}" data-xp-toggle="fullParty">
-            <span class="dm-toggle-dot"></span>FULL PARTY
-          </button>
-          <div class="dm-multiplier">×${mult.toFixed(2)}</div>
-        </div>
-        <div class="dm-xp-pending ${pendingClass}">
-          ${xp.pending !== 0 ? `${pendingSign}${fmtXp(xp.pending)} pending` : "no pending xp"}
-        </div>
-        <button class="btn end-session" id="end-session" ${xp.pending === 0 ? "disabled" : ""}>${endSessionLabel}</button>
-      </div>
-
       <div class="dm-dash-grid">
         <div class="dm-dash-col left">
+          ${renderQuestsPanel()}
+        </div>
+
+        <div class="dm-dash-col middle">
+          <div class="dm-player-cards">
+            ${renderPlayerCards()}
+          </div>
+          <div class="dm-scratchpad-wrap">
+            <div class="dm-scratchpad-label">SCRATCHPAD</div>
+            <textarea
+              id="dm-scratchpad"
+              class="dm-scratchpad"
+              placeholder="Notes for next session — autosaved, never wiped."
+            >${escapeHtml(dmData.scratchpad || "")}</textarea>
+          </div>
+        </div>
+
+        <div class="dm-dash-col right">
+          <div class="dm-xp-controls">
+            <div class="dm-xp-controls-top">
+              <div class="dm-xp-pending ${pendingClass}">${pendingLabel}</div>
+              <button class="btn end-session" id="end-session" ${xp.pending === 0 ? "disabled" : ""}>END SESSION</button>
+            </div>
+            <div class="dm-xp-toggles">
+              <button class="dm-toggle ${xp.recapBonus ? "on" : ""}" data-xp-toggle="recapBonus">
+                <span class="dm-toggle-dot"></span>RECAP
+              </button>
+              <button class="dm-toggle ${xp.fullParty ? "on" : ""}" data-xp-toggle="fullParty">
+                <span class="dm-toggle-dot"></span>FULL PARTY
+              </button>
+              <div class="dm-multiplier">×${mult.toFixed(2)}</div>
+            </div>
+          </div>
+          ${renderPresetGroup("problemSolving")}
+          ${renderPresetGroup("sideQuests")}
           ${renderPresetGroup("story")}
           ${renderPresetGroup("roleplay")}
         </div>
-        <div class="dm-dash-col middle">
-          ${renderPlayerCards()}
-        </div>
-        <div class="dm-dash-col right">
-          ${renderPresetGroup("problemSolving")}
-          ${renderPresetGroup("sideQuests")}
-        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ----- QUEST TRACKER -----
+
+function createDefaultQuest() {
+  return {
+    id: "q" + Date.now() + Math.random().toString(36).slice(2, 7),
+    title: "",
+    objective: "",
+    reward: "",
+    repeatable: false,
+    completedCount: 0,
+  };
+}
+
+function renderQuestsPanel() {
+  const quests = dmData.quests || [];
+  let body;
+  if (quests.length === 0 && !addingQuest) {
+    body = `<div class="dm-quest-empty">No quests yet. Click + ADD QUEST to track a hook.</div>`;
+  } else {
+    body = `<div class="dm-quest-list">${quests.map(renderQuestCard).join("")}</div>`;
+  }
+  const addBtn = addingQuest
+    ? ""
+    : `<button class="btn quest-add-btn" id="add-quest">+ ADD QUEST</button>`;
+  return `
+    <div class="dm-quest-panel">
+      <div class="dm-quest-header">QUESTS</div>
+      ${addingQuest ? renderQuestForm(createDefaultQuest(), true) : ""}
+      ${body}
+      ${addBtn}
+    </div>
+  `;
+}
+
+function renderQuestCard(q) {
+  if (editingQuestId === q.id) return renderQuestForm(q, false);
+
+  const isConfirmingDelete   = confirmingQuestDeleteId === q.id;
+  const isConfirmingComplete = confirmingQuestCompleteId === q.id;
+
+  const deleteBtn = isConfirmingDelete
+    ? `<button class="item-delete confirming" data-quest-delete="${q.id}">SURE?</button>`
+    : `<button class="item-delete" data-quest-delete="${q.id}" title="delete">×</button>`;
+
+  // Repeatable quests increment a counter on COMPLETE — no confirm needed.
+  // Non-repeatable quests need a click-to-confirm before deletion.
+  let completeBtn;
+  if (q.repeatable) {
+    completeBtn = `<button class="btn tiny" data-quest-complete="${q.id}">+ COMPLETE</button>`;
+  } else {
+    completeBtn = isConfirmingComplete
+      ? `<button class="btn tiny success confirming" data-quest-complete="${q.id}">CONFIRM DONE</button>`
+      : `<button class="btn tiny" data-quest-complete="${q.id}">COMPLETE</button>`;
+  }
+
+  const repeatBadge = q.repeatable
+    ? `<span class="dm-quest-repeat">REPEATABLE${q.completedCount > 0 ? ` · ${q.completedCount}×` : ""}</span>`
+    : "";
+  const rewardLine = q.reward
+    ? `<div class="dm-quest-reward"><span class="dm-quest-reward-label">REWARD</span> ${escapeHtml(q.reward)}</div>`
+    : "";
+
+  return `
+    <div class="dm-quest-card">
+      <div class="dm-quest-card-head">
+        <div class="dm-quest-title">${escapeHtml(q.title) || "(untitled)"}</div>
+        ${deleteBtn}
+      </div>
+      ${q.objective ? `<div class="dm-quest-objective">${escapeHtml(q.objective)}</div>` : ""}
+      ${rewardLine}
+      <div class="dm-quest-actions">
+        ${repeatBadge}
+        <span class="dm-quest-actions-right">
+          <button class="item-edit" data-quest-edit="${q.id}">EDIT</button>
+          ${completeBtn}
+        </span>
+      </div>
+    </div>
+  `;
+}
+
+function renderQuestForm(q, isNew) {
+  const titleAttr = isNew ? `id="new-quest-title"` : `data-qf-title="${q.id}"`;
+  const objAttr   = isNew ? `id="new-quest-objective"` : `data-qf-objective="${q.id}"`;
+  const rewAttr   = isNew ? `id="new-quest-reward"` : `data-qf-reward="${q.id}"`;
+  const repAttr   = isNew ? `id="new-quest-repeatable"` : `data-qf-repeatable="${q.id}"`;
+  const saveAttr  = isNew ? `id="save-new-quest"` : `data-quest-save="${q.id}"`;
+  const cancelAttr = isNew ? `id="cancel-new-quest"` : `data-quest-cancel="${q.id}"`;
+  return `
+    <div class="dm-quest-form">
+      <div class="detail-form-row">
+        <label class="form-label">Title <span class="required">*</span></label>
+        <input type="text" ${titleAttr} value="${escapeHtml(q.title)}" placeholder="Tamara's missing cat" />
+      </div>
+      <div class="detail-form-row">
+        <label class="form-label">Objective</label>
+        <textarea ${objAttr} placeholder="Find Whiskers, last seen near the cargo bay.">${escapeHtml(q.objective)}</textarea>
+      </div>
+      <div class="detail-form-row">
+        <label class="form-label">Reward (optional)</label>
+        <input type="text" ${rewAttr} value="${escapeHtml(q.reward)}" placeholder="50 cr, a homemade pie, ..." />
+      </div>
+      <label class="dm-quest-repeat-check">
+        <input type="checkbox" ${repAttr} ${q.repeatable ? "checked" : ""} />
+        <span>Repeatable (track completions instead of removing)</span>
+      </label>
+      <div class="form-buttons">
+        <button class="btn" ${saveAttr}>SAVE</button>
+        <button class="btn danger" ${cancelAttr}>CANCEL</button>
       </div>
     </div>
   `;
@@ -2253,6 +2392,136 @@ function wireDmDashboard() {
     dmData.xp.pending = 0;
     saveDmData();
     renderDmDashboard();
+  });
+
+  wireQuests();
+  wireScratchpad();
+}
+
+function wireQuests() {
+  const resetConfirm = () => {
+    confirmingQuestDeleteId = null;
+    confirmingQuestCompleteId = null;
+  };
+
+  // ----- ADD QUEST -----
+  const addBtn = document.getElementById("add-quest");
+  if (addBtn) addBtn.addEventListener("click", () => {
+    resetConfirm();
+    addingQuest = true;
+    editingQuestId = null;
+    renderDmDashboard();
+    document.getElementById("new-quest-title")?.focus();
+  });
+
+  const saveNew = document.getElementById("save-new-quest");
+  if (saveNew) saveNew.addEventListener("click", () => {
+    const title = (document.getElementById("new-quest-title").value || "").trim();
+    if (!title) return;
+    const q = createDefaultQuest();
+    q.title = title;
+    q.objective = (document.getElementById("new-quest-objective").value || "").trim();
+    q.reward = (document.getElementById("new-quest-reward").value || "").trim();
+    q.repeatable = !!document.getElementById("new-quest-repeatable").checked;
+    dmData.quests.push(q);
+    addingQuest = false;
+    saveDmData();
+    renderDmDashboard();
+  });
+
+  const cancelNew = document.getElementById("cancel-new-quest");
+  if (cancelNew) cancelNew.addEventListener("click", () => {
+    addingQuest = false;
+    renderDmDashboard();
+  });
+
+  // ----- EDIT QUEST -----
+  document.querySelectorAll("[data-quest-edit]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingQuestId = btn.dataset.questEdit;
+      addingQuest = false;
+      renderDmDashboard();
+      document.querySelector(`[data-qf-title="${editingQuestId}"]`)?.focus();
+    });
+  });
+
+  document.querySelectorAll("[data-quest-save]").forEach(btn => {
+    const id = btn.dataset.questSave;
+    btn.addEventListener("click", () => {
+      const q = dmData.quests.find(x => x.id === id);
+      if (!q) return;
+      const title = (document.querySelector(`[data-qf-title="${id}"]`).value || "").trim();
+      if (!title) return;
+      q.title = title;
+      q.objective = (document.querySelector(`[data-qf-objective="${id}"]`).value || "").trim();
+      q.reward = (document.querySelector(`[data-qf-reward="${id}"]`).value || "").trim();
+      q.repeatable = !!document.querySelector(`[data-qf-repeatable="${id}"]`).checked;
+      editingQuestId = null;
+      saveDmData();
+      renderDmDashboard();
+    });
+  });
+
+  document.querySelectorAll("[data-quest-cancel]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      editingQuestId = null;
+      renderDmDashboard();
+    });
+  });
+
+  // ----- COMPLETE QUEST -----
+  // Repeatable: increments completedCount, no removal, no confirm.
+  // Non-repeatable: first click stages confirm, second click removes the quest.
+  document.querySelectorAll("[data-quest-complete]").forEach(btn => {
+    const id = btn.dataset.questComplete;
+    btn.addEventListener("click", () => {
+      const q = dmData.quests.find(x => x.id === id);
+      if (!q) return;
+      if (q.repeatable) {
+        q.completedCount = (q.completedCount || 0) + 1;
+        saveDmData();
+        renderDmDashboard();
+        return;
+      }
+      if (confirmingQuestCompleteId === id) {
+        dmData.quests = dmData.quests.filter(x => x.id !== id);
+        confirmingQuestCompleteId = null;
+        saveDmData();
+        renderDmDashboard();
+      } else {
+        confirmingQuestCompleteId = id;
+        confirmingQuestDeleteId = null;
+        renderDmDashboard();
+      }
+    });
+  });
+
+  // ----- DELETE QUEST (× button, click-to-confirm) -----
+  document.querySelectorAll("[data-quest-delete]").forEach(btn => {
+    const id = btn.dataset.questDelete;
+    btn.addEventListener("click", () => {
+      if (confirmingQuestDeleteId === id) {
+        dmData.quests = dmData.quests.filter(x => x.id !== id);
+        confirmingQuestDeleteId = null;
+        saveDmData();
+        renderDmDashboard();
+      } else {
+        confirmingQuestDeleteId = id;
+        confirmingQuestCompleteId = null;
+        renderDmDashboard();
+      }
+    });
+  });
+}
+
+function wireScratchpad() {
+  const ta = document.getElementById("dm-scratchpad");
+  if (!ta) return;
+  // Save on every keystroke; do NOT re-render or focus + caret would die mid-typing.
+  ta.addEventListener("input", () => {
+    dmData.scratchpad = ta.value;
+    saveDmData();
   });
 }
 
