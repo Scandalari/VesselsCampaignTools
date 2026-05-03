@@ -1596,6 +1596,58 @@ html, body {
   padding: 10px 12px;
   transition: border-color 120ms, box-shadow 120ms;
 }
+/* Setup mode rows have a wider init cell to fit the input + d20 button,
+   and only 3 columns since there's no HP cell. */
+.combatant-row.setup {
+  grid-template-columns: 130px 1fr auto;
+}
+
+.init-setup {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+}
+.init-input {
+  width: 48px;
+  background: #0a0a14;
+  border: 1px solid #1a1a2e;
+  color: #fbbf24;
+  font: inherit;
+  font-family: "Consolas", monospace;
+  font-weight: 800;
+  font-size: 17px;
+  text-align: center;
+  padding: 4px;
+  -moz-appearance: textfield;
+}
+.init-input::-webkit-outer-spin-button,
+.init-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.init-input:focus {
+  outline: none;
+  border-color: #fbbf24;
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+}
+.init-roll-btn {
+  background: transparent;
+  border: 1px solid #1a1a2e;
+  color: #8a7a9a;
+  font: inherit;
+  font-family: "Consolas", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 5px 6px;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+.init-roll-btn:hover {
+  color: #fbbf24;
+  border-color: #fbbf24;
+}
 .combatant-row.party  { border-left: 4px solid #00d4e0; }
 .combatant-row.ally   { border-left: 4px solid #b54ad6; }
 .combatant-row.enemy  { border-left: 4px solid #ff5577; }
@@ -1851,4 +1903,391 @@ html, body {
   color: #00d4e0;
   text-shadow: 0 0 12px rgba(0, 212, 224, 0.4);
   font-family: "Consolas", monospace;
+}
+
+/* ============================================================
+   DM DASHBOARD
+   ============================================================ */
+
+.dm-dashboard {
+  padding: 16px 20px 20px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.dm-dash {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ----- top XP bar ----- */
+.dm-xp-bar {
+  display: grid;
+  grid-template-columns: 60px 1fr 70px;
+  align-items: center;
+  gap: 14px;
+}
+.dm-xp-level {
+  font-size: 13px;
+  font-weight: 800;
+  color: #8a7a9a;
+  letter-spacing: 0.2em;
+  font-family: "Consolas", monospace;
+}
+.dm-xp-track {
+  position: relative;
+  height: 22px;
+  background: #0f0f1a;
+  border: 1px solid #1a1a2e;
+  overflow: hidden;
+}
+.dm-xp-fill {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  background: #00d4e0;
+  box-shadow: 0 0 12px rgba(0, 212, 224, 0.35);
+  transition: width 220ms ease-out;
+}
+.dm-xp-current {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 800;
+  color: #ff2a8a;
+  letter-spacing: 0.1em;
+  font-family: "Consolas", monospace;
+  text-shadow: 0 0 6px rgba(10, 10, 20, 0.8);
+}
+.dm-xp-next {
+  font-size: 13px;
+  font-weight: 700;
+  color: #8a7a9a;
+  letter-spacing: 0.1em;
+  font-family: "Consolas", monospace;
+  text-align: right;
+}
+
+/* ----- multiplier toggles + END SESSION row ----- */
+.dm-xp-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dm-xp-toggles {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dm-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid #1a1a2e;
+  color: #8a7a9a;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms;
+}
+.dm-toggle:hover {
+  border-color: #00d4e0;
+  color: #e6e0f0;
+}
+.dm-toggle-dot {
+  width: 8px;
+  height: 8px;
+  border: 1px solid #1a1a2e;
+  background: #0a0a14;
+  display: inline-block;
+}
+.dm-toggle.on {
+  border-color: #00d4e0;
+  color: #00d4e0;
+}
+.dm-toggle.on .dm-toggle-dot {
+  background: #00d4e0;
+  border-color: #00d4e0;
+  box-shadow: 0 0 6px rgba(0, 212, 224, 0.6);
+}
+.dm-multiplier {
+  font-family: "Consolas", monospace;
+  font-size: 14px;
+  font-weight: 800;
+  color: #00d4e0;
+  border: 1px solid #1a1a2e;
+  padding: 5px 10px;
+  letter-spacing: 0.05em;
+}
+.dm-xp-pending {
+  flex: 1;
+  text-align: right;
+  font-family: "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.dm-xp-pending.zero { color: #8a7a9a; }
+.dm-xp-pending.positive {
+  color: #fbbf24;
+  text-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+}
+.dm-xp-pending.negative {
+  color: #ff5577;
+  text-shadow: 0 0 6px rgba(255, 85, 119, 0.4);
+}
+.btn.end-session {
+  border-color: #ff2a8a;
+  color: #ff2a8a;
+}
+.btn.end-session:hover:not(:disabled) {
+  background: rgba(255, 42, 138, 0.1);
+  box-shadow: 0 0 12px rgba(255, 42, 138, 0.3);
+}
+.btn.end-session:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  border-color: #1a1a2e;
+  color: #8a7a9a;
+}
+
+/* ----- 3-column grid ----- */
+.dm-dash-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(360px, 1.4fr) minmax(220px, 1fr);
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.dm-dash-grid::-webkit-scrollbar { display: none; }
+.dm-dash-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* ----- preset groups ----- */
+.dm-preset-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dm-preset-group-label {
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 700;
+  color: #ff2a8a;
+  letter-spacing: 0.18em;
+  text-align: center;
+  text-shadow: 0 0 6px rgba(255, 42, 138, 0.3);
+}
+.dm-preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.dm-preset {
+  background: #0f0f1a;
+  border: 1px solid #1a1a2e;
+  color: #00d4e0;
+  padding: 14px 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 70px;
+  font-family: inherit;
+  transition: border-color 120ms, box-shadow 120ms, background 120ms;
+}
+.dm-preset:hover {
+  border-color: #00d4e0;
+  background: rgba(0, 212, 224, 0.06);
+  box-shadow: 0 0 10px rgba(0, 212, 224, 0.25);
+}
+.dm-preset:active {
+  background: rgba(0, 212, 224, 0.14);
+}
+.dm-preset-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.dm-preset-value {
+  font-size: 11px;
+  font-family: "Consolas", monospace;
+  color: #8a7a9a;
+  letter-spacing: 0.05em;
+}
+.dm-preset:hover .dm-preset-value { color: #fbbf24; }
+
+/* ----- player cards (middle column) ----- */
+.dm-dash-empty {
+  border: 1px dashed #1a1a2e;
+  color: #8a7a9a;
+  padding: 28px;
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+}
+.dm-player-card {
+  border: 1px solid #00d4e0;
+  background: #0f0f1a;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 0 10px rgba(0, 212, 224, 0.1);
+}
+.dm-player-card-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+}
+.dm-player-name {
+  font-size: 22px;
+  font-weight: 800;
+  color: #00d4e0;
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 10px rgba(0, 212, 224, 0.3);
+}
+.dm-player-passives {
+  text-align: right;
+  font-family: "Consolas", monospace;
+}
+.dm-passives-head {
+  font-size: 13px;
+  font-weight: 700;
+  color: #00d4e0;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.dm-passives-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #00d4e0;
+}
+.dm-passive-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 32px;
+}
+.dm-passive-label {
+  font-size: 11px;
+  color: #00d4e0;
+  letter-spacing: 0.05em;
+}
+.dm-passive-val {
+  font-size: 13px;
+  font-weight: 800;
+  color: #e6e0f0;
+}
+.dm-passive-sep { color: #1a1a2e; }
+.dm-card-empty {
+  font-size: 11px;
+  color: #8a7a9a;
+  letter-spacing: 0.1em;
+  font-style: italic;
+}
+
+/* ----- chips (yellow feats / magenta languages) ----- */
+.dm-feat-chips, .dm-lang-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dm-feat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid #fbbf24;
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: rgba(251, 191, 36, 0.05);
+}
+.dm-lang-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid #ff2a8a;
+  color: #ff2a8a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  background: rgba(255, 42, 138, 0.05);
+}
+
+/* ----- chip editors (Party screen edit form) ----- */
+.chip-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chip-editor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+.chip-editor-list:empty::before {
+  content: "(none yet)";
+  color: #8a7a9a;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+}
+.dm-feat-chip.editable, .dm-lang-chip.editable {
+  padding: 3px 4px 3px 8px;
+}
+.chip-remove {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 120ms;
+}
+.chip-remove:hover { opacity: 1; }
+.chip-editor-add {
+  display: flex;
+  gap: 6px;
+}
+.chip-editor-input {
+  flex: 1;
+  background: #0a0a14;
+  border: 1px solid #1a1a2e;
+  color: #e6e0f0;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.chip-editor-input:focus {
+  outline: none;
+  border-color: #00d4e0;
+  box-shadow: 0 0 6px rgba(0, 212, 224, 0.3);
 }

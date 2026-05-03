@@ -10,10 +10,10 @@ const TABS = {
     { id: "notes",     label: "NOTES" },
   ],
   dm: [
-    { id: "dashboard", label: "DASHBOARD" },
-    { id: "party",     label: "PARTY" },
-    { id: "combat",    label: "COMBAT" },
-    { id: "loot",      label: "LOOT" },
+    { id: "dm-dashboard", label: "DASHBOARD" },
+    { id: "party",        label: "PARTY" },
+    { id: "combat",       label: "COMBAT" },
+    { id: "loot",         label: "LOOT" },
   ],
 };
 
@@ -169,6 +169,58 @@ let confirmingFinishCombat = false;
 let confirmingResetCombat = false;
 let postCombatLootCount = 10;
 
+// DM Dashboard UI state. Pending XP highlight runs briefly after a button click
+// so the DM can see where the points just landed.
+let xpPulse = 0;
+
+// Standard 5e XP-by-level thresholds (PHB). Level = highest threshold <= total.
+// Index 0 = level 1 (no XP needed). Capped at 20.
+const XP_THRESHOLDS = [
+  0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000,
+  85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000,
+];
+
+// XP preset buttons grouped by category. Left-click adds, right-click subtracts.
+// Each value gets multiplied by the active multiplier (RECAP + FULL PARTY).
+const XP_PRESETS = {
+  story: {
+    label: "Story",
+    items: [
+      { id: "campaign",    label: "Campaign",    value: 2500 },
+      { id: "major",       label: "Major",       value: 250 },
+      { id: "minor",       label: "Minor",       value: 125 },
+      { id: "progression", label: "Progression", value: 250 },
+    ],
+  },
+  roleplay: {
+    label: "Roleplay",
+    items: [
+      { id: "majorRp",   label: "Major RP",  value: 250 },
+      { id: "minorRp",   label: "Minor RP",  value: 75 },
+      { id: "bonding",   label: "Bonding",   value: 100 },
+      { id: "backstory", label: "Backstory", value: 150 },
+    ],
+  },
+  problemSolving: {
+    label: "Problem Solving",
+    items: [
+      { id: "puzzle",   label: "Puzzle",   value: 150 },
+      { id: "secret",   label: "Secret",   value: 100 },
+      { id: "creative", label: "Creative", value: 100 },
+      { id: "memory",   label: "Memory",   value: 50 },
+    ],
+  },
+  sideQuests: {
+    label: "Side Quests",
+    items: [
+      { id: "short",  label: "Short",  value: 100 },
+      { id: "medium", label: "Medium", value: 150 },
+      { id: "long",   label: "Long",   value: 200 },
+      { id: "huge",   label: "LONG",   value: 500 },
+    ],
+  },
+};
+
 const LOOT_CATEGORIES = [
   "consumable", "weapon", "armor", "wondrous",
   "ammo", "gear", "tools", "gem", "art",
@@ -221,6 +273,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderInventory();
   renderNotes();
   renderParty();
+  renderDmDashboard();
   renderLoot();
   renderCombat();
 });
@@ -237,6 +290,7 @@ window.addEventListener("pywebviewready", async () => {
   renderInventory();
   renderNotes();
   renderParty();
+  renderDmDashboard();
   renderLoot();
   renderCombat();
 });
@@ -245,7 +299,14 @@ function createDefaultDmData() {
   return {
     party: { characters: [], allies: [] },
     combat: createDefaultCombat(),
+    xp: createDefaultXp(),
   };
+}
+
+// Party-wide XP. `total` is committed XP (level is derived from it). `pending`
+// buffers button clicks + post-combat encounter XP until END SESSION commits.
+function createDefaultXp() {
+  return { total: 0, pending: 0, recapBonus: false, fullParty: false };
 }
 
 function createDefaultCombat() {
@@ -292,6 +353,12 @@ async function loadDmData() {
   // v1.0.7 → v1.0.8: dropped folders. Strip stale data to keep dm.json clean.
   if (dmData.party.folders) delete dmData.party.folders;
   dmData.party.characters.forEach(c => { if (c.folderId !== undefined) delete c.folderId; });
+  // v1.0.11 → v1.0.12: introduce XP pool.
+  if (!dmData.xp || typeof dmData.xp !== "object") dmData.xp = createDefaultXp();
+  if (typeof dmData.xp.total !== "number") dmData.xp.total = 0;
+  if (typeof dmData.xp.pending !== "number") dmData.xp.pending = 0;
+  if (typeof dmData.xp.recapBonus !== "boolean") dmData.xp.recapBonus = false;
+  if (typeof dmData.xp.fullParty !== "boolean") dmData.xp.fullParty = false;
 }
 
 async function saveDmData() {
@@ -536,7 +603,7 @@ function renderTabs() {
 
 function setActiveView(viewId) {
   const allowed = TABS[settings.mode].map(t => t.id);
-  if (viewId !== "settings" && !allowed.includes(viewId)) viewId = "dashboard";
+  if (viewId !== "settings" && !allowed.includes(viewId)) viewId = allowed[0];
   // Leaving the dashboard exits config mode (already auto-saved on every edit).
   if (configMode && viewId !== "dashboard") {
     configMode = false;
@@ -1999,6 +2066,204 @@ function wireNotes() {
 }
 
 // ============================================================
+// DM DASHBOARD (XP pool, preset awards, player at-a-glance)
+// ============================================================
+
+// Multiplier rule: each toggled checkbox adds 0.05 to the base 1.0 multiplier.
+// Both on → ×1.10. Multiplier applies to every preset button click.
+function xpMultiplier() {
+  let m = 1;
+  if (dmData.xp.recapBonus) m += 0.05;
+  if (dmData.xp.fullParty)  m += 0.05;
+  return m;
+}
+
+// Derive level from total XP using the standard 5e thresholds. Caps at 20.
+function xpLevelInfo(total) {
+  let level = 1;
+  for (let i = 0; i < XP_THRESHOLDS.length; i++) {
+    if (total >= XP_THRESHOLDS[i]) level = i + 1;
+  }
+  if (level >= 20) {
+    return { level: 20, current: total, base: XP_THRESHOLDS[19], next: XP_THRESHOLDS[19], pct: 100, maxed: true };
+  }
+  const base = XP_THRESHOLDS[level - 1];
+  const next = XP_THRESHOLDS[level];
+  const span = next - base;
+  const pct = span > 0 ? Math.max(0, Math.min(100, ((total - base) / span) * 100)) : 0;
+  return { level, current: total, base, next, pct, maxed: false };
+}
+
+// Comma-split that ignores empties + whitespace. Used for feats / languages
+// chip rendering. Stored shape stays a single string for now.
+function splitChips(s) {
+  if (!s) return [];
+  return s.split(",").map(x => x.trim()).filter(Boolean);
+}
+
+function fmtXp(n) {
+  return n.toLocaleString("en-US");
+}
+
+function renderDmDashboard() {
+  const container = document.getElementById("dm-dashboard");
+  if (!container) return;
+  container.innerHTML = renderDmDashboardHTML();
+  wireDmDashboard();
+}
+
+function renderDmDashboardHTML() {
+  const xp = dmData.xp;
+  const mult = xpMultiplier();
+  const info = xpLevelInfo(xp.total);
+  const pendingSign = xp.pending >= 0 ? "+" : "";
+  const pendingClass = xp.pending > 0 ? "positive" : xp.pending < 0 ? "negative" : "zero";
+  const endSessionLabel = xp.pending !== 0
+    ? `END SESSION  (${pendingSign}${fmtXp(xp.pending)})`
+    : `END SESSION`;
+
+  return `
+    <div class="dm-dash">
+      <div class="dm-xp-bar">
+        <div class="dm-xp-level">LVL ${info.level}</div>
+        <div class="dm-xp-track">
+          <div class="dm-xp-fill" style="width: ${info.pct}%"></div>
+          <div class="dm-xp-current">${fmtXp(info.current)} XP</div>
+        </div>
+        <div class="dm-xp-next">${info.maxed ? "MAX" : fmtXp(info.next)}</div>
+      </div>
+
+      <div class="dm-xp-controls">
+        <div class="dm-xp-toggles">
+          <button class="dm-toggle ${xp.recapBonus ? "on" : ""}" data-xp-toggle="recapBonus">
+            <span class="dm-toggle-dot"></span>RECAP
+          </button>
+          <button class="dm-toggle ${xp.fullParty ? "on" : ""}" data-xp-toggle="fullParty">
+            <span class="dm-toggle-dot"></span>FULL PARTY
+          </button>
+          <div class="dm-multiplier">×${mult.toFixed(2)}</div>
+        </div>
+        <div class="dm-xp-pending ${pendingClass}">
+          ${xp.pending !== 0 ? `${pendingSign}${fmtXp(xp.pending)} pending` : "no pending xp"}
+        </div>
+        <button class="btn end-session" id="end-session" ${xp.pending === 0 ? "disabled" : ""}>${endSessionLabel}</button>
+      </div>
+
+      <div class="dm-dash-grid">
+        <div class="dm-dash-col left">
+          ${renderPresetGroup("story")}
+          ${renderPresetGroup("roleplay")}
+        </div>
+        <div class="dm-dash-col middle">
+          ${renderPlayerCards()}
+        </div>
+        <div class="dm-dash-col right">
+          ${renderPresetGroup("problemSolving")}
+          ${renderPresetGroup("sideQuests")}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPresetGroup(groupId) {
+  const g = XP_PRESETS[groupId];
+  return `
+    <div class="dm-preset-group">
+      <div class="dm-preset-group-label">${g.label}</div>
+      <div class="dm-preset-grid">
+        ${g.items.map(p => `
+          <button class="dm-preset" data-xp-preset="${groupId}:${p.id}">
+            <div class="dm-preset-label">${p.label}</div>
+            <div class="dm-preset-value">+${fmtXp(p.value)}</div>
+          </button>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderPlayerCards() {
+  const chars = dmData.party.characters || [];
+  if (chars.length === 0) {
+    return `<div class="dm-dash-empty">No party characters yet. Add them on the PARTY tab so they show up here.</div>`;
+  }
+  return chars.map(renderPlayerCard).join("");
+}
+
+function renderPlayerCard(c) {
+  const feats = splitChips(c.features);
+  const langs = splitChips(c.languages);
+  const featsHtml = feats.length === 0
+    ? `<div class="dm-card-empty">no feats</div>`
+    : `<div class="dm-feat-chips">${feats.map(f => `<span class="dm-feat-chip">${escapeHtml(f)}</span>`).join("")}</div>`;
+  const langsHtml = langs.length === 0
+    ? `<div class="dm-card-empty">no languages</div>`
+    : `<div class="dm-lang-chips">${langs.map(l => `<span class="dm-lang-chip">${escapeHtml(l)}</span>`).join("")}</div>`;
+  return `
+    <div class="dm-player-card">
+      <div class="dm-player-card-head">
+        <div class="dm-player-name">${escapeHtml(c.name) || "(unnamed)"}</div>
+        <div class="dm-player-passives">
+          <div class="dm-passives-head">Passives</div>
+          <div class="dm-passives-row">
+            <span class="dm-passive-cell"><span class="dm-passive-label">Per</span><span class="dm-passive-val">${c.passives.perception}</span></span>
+            <span class="dm-passive-sep">|</span>
+            <span class="dm-passive-cell"><span class="dm-passive-label">Inv</span><span class="dm-passive-val">${c.passives.investigation}</span></span>
+            <span class="dm-passive-sep">|</span>
+            <span class="dm-passive-cell"><span class="dm-passive-label">Ins</span><span class="dm-passive-val">${c.passives.insight}</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="dm-player-card-feats">${featsHtml}</div>
+      <div class="dm-player-card-langs">${langsHtml}</div>
+    </div>
+  `;
+}
+
+function wireDmDashboard() {
+  // Multiplier toggles
+  document.querySelectorAll("[data-xp-toggle]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const key = btn.dataset.xpToggle;
+      dmData.xp[key] = !dmData.xp[key];
+      saveDmData();
+      renderDmDashboard();
+    });
+  });
+
+  // Preset awards. Left-click adds, right-click subtracts. Both apply the
+  // current multiplier. Pending can go negative; END SESSION reconciles.
+  document.querySelectorAll("[data-xp-preset]").forEach(btn => {
+    const [group, id] = btn.dataset.xpPreset.split(":");
+    const preset = XP_PRESETS[group].items.find(p => p.id === id);
+    if (!preset) return;
+    btn.addEventListener("click", () => applyXp(preset.value, +1));
+    btn.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      applyXp(preset.value, -1);
+    });
+  });
+
+  // END SESSION commits pending → total. Total cannot go below 0.
+  const end = document.getElementById("end-session");
+  if (end) end.addEventListener("click", () => {
+    if (dmData.xp.pending === 0) return;
+    dmData.xp.total = Math.max(0, dmData.xp.total + dmData.xp.pending);
+    dmData.xp.pending = 0;
+    saveDmData();
+    renderDmDashboard();
+  });
+}
+
+function applyXp(baseValue, sign) {
+  const awarded = Math.round(baseValue * xpMultiplier()) * sign;
+  dmData.xp.pending += awarded;
+  saveDmData();
+  renderDmDashboard();
+}
+
+// ============================================================
 // PARTY (DM mode — flat character grid → character detail w/ allies)
 // ============================================================
 
@@ -2118,7 +2383,7 @@ function renderCharacterDetailRead(c) {
               <div class="detail-stat-row"><span class="detail-stat-label">AC</span><span class="detail-stat-value">${c.ac || 10}</span></div>
             </div>
             <div class="panel-header" style="margin-top:14px;">LANGUAGES</div>
-            <div class="detail-text ${c.languages ? "" : "empty"}">${c.languages ? escapeHtml(c.languages) : "(none)"}</div>
+            ${renderChipReadHTML(c.languages, "lang")}
           </div>
         </div>
 
@@ -2132,8 +2397,8 @@ function renderCharacterDetailRead(c) {
         </div>
 
         <div class="panel">
-          <div class="panel-header">FEATURES &amp; TRAITS</div>
-          <div class="detail-text ${c.features ? "" : "empty"}">${c.features ? escapeHtml(c.features) : "(none)"}</div>
+          <div class="panel-header">FEATS</div>
+          ${renderChipReadHTML(c.features, "feat")}
         </div>
 
         <div class="panel">
@@ -2285,16 +2550,12 @@ function renderCharacterForm(c, isNew) {
 
         <div class="panel">
           <div class="panel-header">LANGUAGES</div>
-          <div class="detail-form-row">
-            <input type="text" data-cf="languages" value="${escapeHtml(c.languages)}" placeholder="Common, Elvish, Sylvan, ..." />
-          </div>
+          ${renderChipEditHTML(c.languages, "languages", "lang", "Add language…")}
         </div>
 
         <div class="panel">
-          <div class="panel-header">FEATURES &amp; TRAITS</div>
-          <div class="detail-form-row">
-            <textarea data-cf="features" placeholder="Alert, Resistance to fire, Fey Ancestry, ...">${escapeHtml(c.features)}</textarea>
-          </div>
+          <div class="panel-header">FEATS</div>
+          ${renderChipEditHTML(c.features, "features", "feat", "Add feat…")}
         </div>
 
         <div class="panel">
@@ -2520,6 +2781,88 @@ function wireParty() {
       }
     });
   });
+
+  // ----- chip editors (FEATS, LANGUAGES) inside the character form -----
+  document.querySelectorAll("[data-chip-editor]").forEach(wireChipEditor);
+}
+
+// Read-only chip render used on the character detail panels and DM Dashboard.
+// `kind` is "feat" (yellow) or "lang" (magenta) and selects the chip class.
+function renderChipReadHTML(rawString, kind) {
+  const chips = splitChips(rawString);
+  if (chips.length === 0) return `<div class="detail-text empty">(none)</div>`;
+  const cls = kind === "feat" ? "dm-feat-chip" : "dm-lang-chip";
+  const wrapCls = kind === "feat" ? "dm-feat-chips" : "dm-lang-chips";
+  return `<div class="${wrapCls}">${chips.map(c => `<span class="${cls}">${escapeHtml(c)}</span>`).join("")}</div>`;
+}
+
+// Editable chip block for the character form. Stores the canonical value as
+// a comma-separated string in a hidden input so readCharacterForm() picks it
+// up the same way as the old plain text fields.
+function renderChipEditHTML(rawString, fieldName, kind, addPlaceholder) {
+  const chips = splitChips(rawString);
+  return `
+    <div class="chip-editor" data-chip-editor="${fieldName}">
+      <input type="hidden" data-cf="${fieldName}" value="${escapeHtml(chips.join(", "))}" />
+      <div class="chip-editor-list ${kind === "feat" ? "feat" : "lang"}">${
+        chips.map(c => renderEditableChip(c, kind)).join("")
+      }</div>
+      <div class="chip-editor-add">
+        <input type="text" class="chip-editor-input" placeholder="${addPlaceholder}" />
+        <button type="button" class="btn tiny chip-editor-add-btn">+ ADD</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderEditableChip(text, kind) {
+  const cls = kind === "feat" ? "dm-feat-chip" : "dm-lang-chip";
+  return `
+    <span class="${cls} editable">
+      <span class="chip-text">${escapeHtml(text)}</span>
+      <button type="button" class="chip-remove" data-chip-remove>×</button>
+    </span>
+  `;
+}
+
+// Wires up an in-place chip editor: clicking + or pressing Enter adds the
+// text from the input to the hidden comma-list; clicking × on a chip removes
+// it. Only the chip list innerHTML is replaced — the rest of the form keeps
+// its focus state.
+function wireChipEditor(root) {
+  if (!root) return;
+  const hidden = root.querySelector('input[type="hidden"][data-cf]');
+  const list = root.querySelector('.chip-editor-list');
+  const input = root.querySelector('.chip-editor-input');
+  const addBtn = root.querySelector('.chip-editor-add-btn');
+  if (!hidden || !list || !input || !addBtn) return;
+  const kind = list.classList.contains("feat") ? "feat" : "lang";
+
+  function getChips() { return splitChips(hidden.value); }
+  function setChips(chips) {
+    hidden.value = chips.join(", ");
+    list.innerHTML = chips.map(c => renderEditableChip(c, kind)).join("");
+    list.querySelectorAll("[data-chip-remove]").forEach(b => {
+      b.addEventListener("click", () => {
+        const text = b.parentElement.querySelector(".chip-text").textContent;
+        setChips(getChips().filter(x => x !== text));
+      });
+    });
+  }
+  function add() {
+    const v = input.value.trim();
+    if (!v) return;
+    const chips = getChips();
+    if (!chips.includes(v)) chips.push(v);
+    setChips(chips);
+    input.value = "";
+    input.focus();
+  }
+  addBtn.addEventListener("click", add);
+  input.addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); add(); }
+  });
+  setChips(getChips());
 }
 
 // Pulls all the form fields out of the active character form and returns a
@@ -2541,7 +2884,7 @@ function readCharacterForm() {
   c.languages = val('input[data-cf="languages"]');
   c.hp_max = num('input[data-cf="hp_max"]', 0, 9999, 0);
   c.ac = num('input[data-cf="ac"]', 0, 99, 10);
-  c.features = (get('textarea[data-cf="features"]')?.value || "").trim();
+  c.features = val('input[data-cf="features"]');
   c.description = (get('textarea[data-cf="description"]')?.value || "").trim();
   c.personality = (get('textarea[data-cf="personality"]')?.value || "").trim();
   return c;
@@ -2727,15 +3070,18 @@ function renderCombatSetup() {
 
 function renderSetupRow(c) {
   const typeBadge = c.type === "enemy" ? "ENEMY" : c.type === "ally" ? "ALLY" : "PARTY";
-  const initDisplay = c.initiative == null
-    ? `<button class="btn tiny" data-roll-init="${c.id}">ROLL +${c.initBonus || 0}</button>`
-    : `<span class="combatant-init">${c.initiative}</span>`;
+  // Editable input so the DM can type whatever the player rolled. The
+  // adjacent d20 button is a fallback (mostly used for absent players or
+  // for re-rolling enemies the DM doesn't like).
   return `
-    <div class="combatant-row ${c.type}">
-      <div class="combatant-init-cell">${initDisplay}</div>
+    <div class="combatant-row setup ${c.type}">
+      <div class="combatant-init-cell init-setup">
+        <input type="number" class="init-input" data-set-init="${c.id}" value="${c.initiative ?? ""}" placeholder="?" />
+        <button class="init-roll-btn" data-roll-init="${c.id}" title="Roll d20 + ${c.initBonus || 0}">d20+${c.initBonus || 0}</button>
+      </div>
       <div class="combatant-name-block">
         <div class="combatant-name">${escapeHtml(c.name)}</div>
-        <div class="combatant-meta">${typeBadge} · HP ${c.maxHp} · AC ${c.ac}${c.type === "enemy" && c.xp ? ` · ${c.xp} XP` : ""}</div>
+        <div class="combatant-meta">${typeBadge} · HP ${c.maxHp} · AC ${c.ac}${c.type === "enemy" && c.xp ? ` · ${c.xp} XP` : ""}${c.attachedTo ? ` · attached to ${escapeHtml(combatantById(c.attachedTo)?.name || "?")}` : ""}</div>
       </div>
       <div class="combatant-actions">
         <button class="item-delete" data-remove-combatant="${c.id}" title="remove">×</button>
@@ -3165,8 +3511,9 @@ function wireCombat() {
       const enemyType = document.getElementById("enemy-type").value || null;
       for (let i = 0; i < qty; i++) {
         const suffix = qty > 1 ? ` ${i + 1}` : "";
-        // Auto-roll initiative if combat is active so the new combatant slots in.
-        const initiative = dmData.combat.active ? rollD20() + initBonus : null;
+        // Always auto-roll enemy initiative — the DM has no player to ask.
+        // Setup-mode roll is editable via the init input on the row.
+        const initiative = rollD20() + initBonus;
         dmData.combat.combatants.push({
           id: "cb" + Date.now() + Math.random().toString(36).slice(2, 7),
           type: "enemy",
@@ -3203,6 +3550,19 @@ function wireCombat() {
   }
 
   // ===== INITIATIVE =====
+  // Manual entry (party/ally rows in setup, also editable for enemies if the
+  // DM wants to override the auto-roll). Save on every keystroke; do NOT
+  // re-render here or the user loses focus mid-typing.
+  document.querySelectorAll("[data-set-init]").forEach(input => {
+    input.addEventListener("input", e => {
+      const c = combatantById(input.dataset.setInit);
+      if (!c) return;
+      const val = input.value.trim();
+      c.initiative = val === "" ? null : Number(val);
+      saveDmData();
+    });
+  });
+
   document.querySelectorAll("[data-roll-init]").forEach(btn => {
     btn.addEventListener("click", () => {
       const c = combatantById(btn.dataset.rollInit);
@@ -3407,8 +3767,14 @@ function wireCombat() {
     dmData.combat.active = false;
     dmData.combat.finished = true;
     dmData.combat.postCombatLoot = null;
+    // Encounter XP (CR-based, already a hard number) flows straight into the
+    // pending pool — no multiplier, since multipliers are for narrative awards.
+    if (dmData.combat.lastEncounterXp > 0) {
+      dmData.xp.pending += dmData.combat.lastEncounterXp;
+    }
     saveDmData();
     renderCombat();
+    renderDmDashboard();
   });
 
   // ===== POST-COMBAT LOOT =====
