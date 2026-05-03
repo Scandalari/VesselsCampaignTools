@@ -14,6 +14,7 @@ const TABS = {
     { id: "party",        label: "PARTY" },
     { id: "combat",       label: "COMBAT" },
     { id: "loot",         label: "LOOT" },
+    { id: "logs",         label: "LOGS" },
   ],
 };
 
@@ -181,6 +182,29 @@ let editingQuestId = null;
 let confirmingQuestDeleteId = null;
 let confirmingQuestCompleteId = null;
 
+// Logs / Logbook UI state. Two-level nav (folder grid → entry list inside a
+// folder) plus an entry-detail level. logsData is loaded from logs.json and
+// is what both DM and player modes render against (DM authors, player views).
+let logsData = null;
+let selectedLogFolderId = null;
+let selectedLogEntryId = null;
+let editingLogEntry = false;
+let addingLogEntry = false;
+let addingLogFolder = false;
+let editingLogFolderId = null;
+let confirmingLogFolderDeleteId = null;
+let confirmingLogEntryDeleteId = null;
+let logImageCache = {};   // entryId -> dataURL, fetched on demand from Python
+let logbookStatus = "";   // transient banner text after export/import
+
+const LOG_TYPES = [
+  { id: "character",    label: "Character" },
+  { id: "location",     label: "Location" },
+  { id: "organization", label: "Organization" },
+  { id: "item",         label: "Item" },
+  { id: "other",        label: "Other" },
+];
+
 // Standard 5e XP-by-level thresholds (PHB). Level = highest threshold <= total.
 // Index 0 = level 1 (no XP needed). Capped at 20.
 const XP_THRESHOLDS = [
@@ -272,11 +296,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // Render eagerly with defaults so the preview panel works without pywebview.
   character = createDefaultCharacter();
   dmData = createDefaultDmData();
+  logsData = createDefaultLogs();
   renderTabs();
   setActiveView("dashboard");
   wireSettingsButton();
   wireModeSwitch();
   wireUpdateButton();
+  wireImportLogbookButton();
+  refreshImportLogbookVisibility();
   renderDashboard();
   renderInventory();
   renderNotes();
@@ -284,6 +311,7 @@ document.addEventListener("DOMContentLoaded", () => {
   renderDmDashboard();
   renderLoot();
   renderCombat();
+  renderLogs();
 });
 
 window.addEventListener("pywebviewready", async () => {
@@ -292,6 +320,7 @@ window.addEventListener("pywebviewready", async () => {
   await loadCharacter();
   await loadPortrait();
   await loadDmData();
+  await loadLogsData();
   renderTabs();
   setActiveView(activeView);
   renderDashboard();
@@ -301,6 +330,7 @@ window.addEventListener("pywebviewready", async () => {
   renderDmDashboard();
   renderLoot();
   renderCombat();
+  renderLogs();
 });
 
 function createDefaultDmData() {
@@ -376,6 +406,24 @@ async function loadDmData() {
 
 async function saveDmData() {
   try { await window.pywebview.api.save_dm_data(dmData); } catch (e) {}
+}
+
+function createDefaultLogs() {
+  return { folders: [], entries: [], exportedAt: null };
+}
+
+async function loadLogsData() {
+  try {
+    const d = await window.pywebview.api.get_logs_data();
+    if (d && typeof d === "object") logsData = d;
+  } catch (e) {}
+  if (!logsData) logsData = createDefaultLogs();
+  if (!Array.isArray(logsData.folders)) logsData.folders = [];
+  if (!Array.isArray(logsData.entries)) logsData.entries = [];
+}
+
+async function saveLogsData() {
+  try { await window.pywebview.api.save_logs_data(logsData); } catch (e) {}
 }
 
 function createDefaultPartyCharacter() {
@@ -652,8 +700,18 @@ function wireModeSwitch() {
       const newMode = opt.dataset.mode;
       if (newMode === settings.mode) return;
       settings.mode = newMode;
+      // Mode change shifts the meaning of every shared view (Logs especially).
+      // Reset nav so we don't end up with stale selection state.
+      selectedLogFolderId = null;
+      selectedLogEntryId = null;
+      addingLogFolder = false;
+      addingLogEntry = false;
+      editingLogEntry = false;
+      editingLogFolderId = null;
       await saveSettings();
       renderTabs();
+      refreshImportLogbookVisibility();
+      renderLogs();
       setActiveView("settings");
     });
   });
@@ -4096,6 +4154,752 @@ function rollPostCombatLoot(enemyTypes, count) {
     });
   }
   return result;
+}
+
+// ============================================================
+// LOGS / LOGBOOK (DM authors via folders + entries; player imports + browses)
+// ============================================================
+
+function renderLogs() {
+  const container = document.getElementById("logs");
+  if (!container) return;
+  if (settings.mode === "dm") {
+    renderDmLogs(container);
+  } else {
+    renderPlayerLogs(container);
+  }
+}
+
+function makeLogId(prefix) {
+  return prefix + Date.now() + Math.random().toString(36).slice(2, 7);
+}
+
+function logTypeLabel(typeId) {
+  return (LOG_TYPES.find(t => t.id === typeId) || LOG_TYPES[LOG_TYPES.length - 1]).label;
+}
+
+function entriesInLogFolder(folderId) {
+  return logsData.entries.filter(e => e.folderId === folderId);
+}
+
+function findLogFolder(id) { return logsData.folders.find(f => f.id === id); }
+function findLogEntry(id)  { return logsData.entries.find(e => e.id === id); }
+
+function logbookSummary() {
+  const folders = logsData.folders.length;
+  const entries = logsData.entries.length;
+  const exported = logsData.exportedAt
+    ? new Date(logsData.exportedAt).toLocaleString()
+    : null;
+  return { folders, entries, exported };
+}
+
+// Image fetch is async — first call returns null and triggers a re-render
+// once the data URL lands. Subsequent calls return the cached URL.
+function fetchLogImage(entry) {
+  if (!entry || !entry.imageFile) return null;
+  if (logImageCache[entry.id]) return logImageCache[entry.id];
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.get_log_image(entry.imageFile)
+      .then(dataUrl => {
+        if (dataUrl) {
+          logImageCache[entry.id] = dataUrl;
+          renderLogs();
+        }
+      })
+      .catch(() => {});
+  }
+  return null;
+}
+
+// ===== DM MODE =====
+function renderDmLogs(container) {
+  if (selectedLogFolderId && !findLogFolder(selectedLogFolderId)) {
+    selectedLogFolderId = null;
+    selectedLogEntryId = null;
+  }
+  if (selectedLogEntryId && !findLogEntry(selectedLogEntryId)) {
+    selectedLogEntryId = null;
+  }
+
+  if (selectedLogEntryId) {
+    container.innerHTML = renderDmLogEntryDetail();
+  } else if (selectedLogFolderId) {
+    container.innerHTML = renderDmLogFolderView();
+  } else {
+    container.innerHTML = renderDmLogRoot();
+  }
+  wireDmLogs();
+}
+
+function renderDmLogRoot() {
+  const folders = logsData.folders;
+  const summary = logbookSummary();
+  const status = logbookStatus
+    ? `<div class="logs-status">${escapeHtml(logbookStatus)}</div>`
+    : "";
+  const grid = folders.length === 0 && !addingLogFolder
+    ? `<div class="logs-empty">No folders yet. Create a folder to start building your logbook.</div>`
+    : `<div class="logs-folder-grid">${folders.map(renderDmFolderCard).join("")}</div>`;
+  return `
+    <div class="logs-header">
+      <div class="logs-header-left">
+        <button class="btn" id="logs-export">SEND TO PLAYERS</button>
+      </div>
+      <div class="logs-title">LOGBOOK</div>
+      <div class="logs-header-right">
+        <button class="btn" id="logs-add-folder">+ NEW FOLDER</button>
+      </div>
+    </div>
+    <div class="logs-summary">${summary.folders} folder${summary.folders === 1 ? "" : "s"} · ${summary.entries} entr${summary.entries === 1 ? "y" : "ies"}${summary.exported ? ` · last exported ${escapeHtml(summary.exported)}` : ""}</div>
+    ${status}
+    ${addingLogFolder ? renderLogFolderForm(null, true) : ""}
+    ${grid}
+  `;
+}
+
+function renderDmFolderCard(f) {
+  if (editingLogFolderId === f.id) return renderLogFolderForm(f, false);
+  const isConfirming = confirmingLogFolderDeleteId === f.id;
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-log-folder-delete="${f.id}">SURE?</button>`
+    : `<button class="item-delete" data-log-folder-delete="${f.id}">×</button>`;
+  const count = entriesInLogFolder(f.id).length;
+  return `
+    <div class="logs-folder-card">
+      <div class="logs-folder-name clickable" data-log-folder-open="${f.id}">${escapeHtml(f.name) || "(unnamed)"}</div>
+      <div class="logs-folder-meta">${count} entr${count === 1 ? "y" : "ies"}</div>
+      <div class="folder-card-actions">
+        <button class="item-edit" data-log-folder-edit="${f.id}">RENAME</button>
+        ${deleteBtn}
+      </div>
+    </div>
+  `;
+}
+
+function renderLogFolderForm(folder, isNew) {
+  const f = folder || { id: "", name: "" };
+  const nameAttr   = isNew ? `id="new-log-folder-name"` : `data-lf-name="${f.id}"`;
+  const saveAttr   = isNew ? `id="save-new-log-folder"` : `data-log-folder-save="${f.id}"`;
+  const cancelAttr = isNew ? `id="cancel-new-log-folder"` : `data-log-folder-cancel="${f.id}"`;
+  return `
+    <div class="logs-folder-form">
+      <input type="text" ${nameAttr} value="${escapeHtml(f.name)}" placeholder="Folder name (e.g. Lore, NPCs, Session 7)" />
+      <div class="form-buttons">
+        <button class="btn" ${saveAttr}>SAVE</button>
+        <button class="btn danger" ${cancelAttr}>CANCEL</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderDmLogFolderView() {
+  const folder = findLogFolder(selectedLogFolderId);
+  if (!folder) return "";
+  const entries = entriesInLogFolder(folder.id);
+  const body = entries.length === 0 && !addingLogEntry
+    ? `<div class="logs-empty">No entries in this folder yet.</div>`
+    : `<div class="logs-entry-list">${entries.map(renderDmEntryRow).join("")}</div>`;
+  return `
+    <div class="logs-header">
+      <div class="logs-header-left">
+        <button class="btn back-btn" id="logs-back-to-root">LOGBOOK</button>
+      </div>
+      <div class="logs-title">${escapeHtml(folder.name)}</div>
+      <div class="logs-header-right">
+        <button class="btn" id="logs-add-entry">+ NEW ENTRY</button>
+      </div>
+    </div>
+    ${addingLogEntry ? renderLogEntryForm(null, folder.id, true) : ""}
+    ${body}
+  `;
+}
+
+function renderDmEntryRow(e) {
+  const isConfirming = confirmingLogEntryDeleteId === e.id;
+  const deleteBtn = isConfirming
+    ? `<button class="item-delete confirming" data-log-entry-delete="${e.id}">SURE?</button>`
+    : `<button class="item-delete" data-log-entry-delete="${e.id}">×</button>`;
+  return `
+    <div class="logs-entry-row">
+      <span class="logs-entry-type ${e.type}">${escapeHtml(logTypeLabel(e.type))}</span>
+      <div class="logs-entry-title clickable" data-log-entry-open="${e.id}">${escapeHtml(e.title) || "(untitled)"}</div>
+      <button class="item-edit" data-log-entry-open="${e.id}">VIEW</button>
+      ${deleteBtn}
+    </div>
+  `;
+}
+
+function renderDmLogEntryDetail() {
+  const entry = findLogEntry(selectedLogEntryId);
+  if (!entry) return "";
+  if (editingLogEntry) return renderLogEntryForm(entry, entry.folderId, false);
+  const folder = findLogFolder(entry.folderId);
+  const imgUrl = fetchLogImage(entry);
+  const imgHtml = imgUrl
+    ? `<div class="logs-entry-image"><img src="${imgUrl}" alt="${escapeHtml(entry.title)}" /></div>`
+    : entry.imageFile
+      ? `<div class="logs-entry-image loading">Loading image…</div>`
+      : "";
+  return `
+    <div class="logs-header">
+      <div class="logs-header-left">
+        <button class="btn back-btn" id="logs-back-to-folder">${escapeHtml(folder ? folder.name : "BACK")}</button>
+      </div>
+      <div class="logs-title">${escapeHtml(entry.title) || "(untitled)"}</div>
+      <div class="logs-header-right">
+        <button class="btn" id="logs-edit-entry">EDIT</button>
+      </div>
+    </div>
+    <div class="logs-entry-detail">
+      <div class="logs-entry-type-row">
+        <span class="logs-entry-type ${entry.type}">${escapeHtml(logTypeLabel(entry.type))}</span>
+      </div>
+      ${imgHtml}
+      <div class="logs-entry-body">${escapeHtml(entry.body || "")}</div>
+    </div>
+  `;
+}
+
+function renderLogEntryForm(entry, folderId, isNew) {
+  const e = entry || {
+    id: makeLogId("le"),
+    folderId,
+    type: "character",
+    title: "",
+    body: "",
+    imageFile: null,
+  };
+  const titleAttr  = isNew ? `id="new-log-entry-title"` : `data-le-title="${e.id}"`;
+  const bodyAttr   = isNew ? `id="new-log-entry-body"` : `data-le-body="${e.id}"`;
+  const typeAttr   = isNew ? `id="new-log-entry-type"` : `data-le-type="${e.id}"`;
+  const saveAttr   = isNew ? `id="save-new-log-entry"` : `data-log-entry-save="${e.id}"`;
+  const cancelAttr = isNew ? `id="cancel-new-log-entry"` : `data-log-entry-cancel="${e.id}"`;
+
+  const typeOptions = LOG_TYPES.map(t =>
+    `<option value="${t.id}" ${t.id === e.type ? "selected" : ""}>${t.label}</option>`
+  ).join("");
+
+  const imgUrl = fetchLogImage(e);
+  const imgInner = imgUrl
+    ? `<img src="${imgUrl}" alt="" />`
+    : e.imageFile
+      ? `<div class="logs-image-loading">Loading…</div>`
+      : `<div class="logs-image-empty">No image — click ATTACH IMAGE.</div>`;
+
+  return `
+    <div class="logs-entry-form">
+      <div class="detail-form-row">
+        <label class="form-label">Title <span class="required">*</span></label>
+        <input type="text" ${titleAttr} value="${escapeHtml(e.title)}" placeholder="Marcus Cole, Father's Foundation, Plasma Pistol, ..." />
+      </div>
+      <div class="detail-form-row">
+        <label class="form-label">Type</label>
+        <select ${typeAttr}>${typeOptions}</select>
+      </div>
+      <div class="detail-form-row">
+        <label class="form-label">Body</label>
+        <textarea ${bodyAttr} placeholder="Write what your players need to know.">${escapeHtml(e.body || "")}</textarea>
+      </div>
+      <div class="detail-form-row">
+        <label class="form-label">Image</label>
+        <div class="logs-image-area">${imgInner}</div>
+        <div class="form-buttons">
+          <button class="btn" data-log-entry-image="${e.id}">${e.imageFile ? "REPLACE IMAGE" : "ATTACH IMAGE"}</button>
+          ${e.imageFile ? `<button class="btn danger" data-log-entry-image-clear="${e.id}">REMOVE IMAGE</button>` : ""}
+        </div>
+      </div>
+      <div class="form-buttons" style="justify-content: flex-end;">
+        <button class="btn danger" ${cancelAttr}>CANCEL</button>
+        <button class="btn" ${saveAttr} data-log-entry-staging='${escapeHtml(JSON.stringify(e))}'>SAVE</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireDmLogs() {
+  const resetConfirm = () => {
+    confirmingLogFolderDeleteId = null;
+    confirmingLogEntryDeleteId = null;
+  };
+
+  // EXPORT (SEND TO PLAYERS)
+  const exportBtn = document.getElementById("logs-export");
+  if (exportBtn) exportBtn.addEventListener("click", async () => {
+    if (!window.pywebview || !window.pywebview.api) return;
+    logbookStatus = "Opening save dialog…";
+    renderLogs();
+    try {
+      // Stamp BEFORE export so the file embeds the timestamp.
+      logsData.exportedAt = Date.now();
+      await saveLogsData();
+      const r = await window.pywebview.api.export_logbook();
+      if (!r.ok) {
+        // Roll back the timestamp on cancel/failure so summary doesn't lie.
+        logsData.exportedAt = null;
+        await saveLogsData();
+        logbookStatus = r.error === "Cancelled." ? "" : `Export failed: ${r.error || "unknown"}`;
+      } else {
+        logbookStatus = "Exported. File Explorer is open at the file — drop it in Discord to send.";
+      }
+    } catch (e) {
+      logbookStatus = "Export failed.";
+    }
+    renderLogs();
+  });
+
+  // ROOT view: + NEW FOLDER
+  const addFolderBtn = document.getElementById("logs-add-folder");
+  if (addFolderBtn) addFolderBtn.addEventListener("click", () => {
+    resetConfirm();
+    addingLogFolder = true;
+    editingLogFolderId = null;
+    renderLogs();
+    document.getElementById("new-log-folder-name")?.focus();
+  });
+
+  const saveNewFolder = document.getElementById("save-new-log-folder");
+  if (saveNewFolder) saveNewFolder.addEventListener("click", () => {
+    const name = (document.getElementById("new-log-folder-name").value || "").trim();
+    if (!name) return;
+    logsData.folders.push({ id: makeLogId("lf"), name });
+    addingLogFolder = false;
+    saveLogsData();
+    renderLogs();
+  });
+  const cancelNewFolder = document.getElementById("cancel-new-log-folder");
+  if (cancelNewFolder) cancelNewFolder.addEventListener("click", () => {
+    addingLogFolder = false;
+    renderLogs();
+  });
+
+  // FOLDER: open
+  document.querySelectorAll("[data-log-folder-open]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      selectedLogFolderId = el.dataset.logFolderOpen;
+      selectedLogEntryId = null;
+      addingLogEntry = false;
+      editingLogEntry = false;
+      renderLogs();
+    });
+  });
+
+  // FOLDER: rename
+  document.querySelectorAll("[data-log-folder-edit]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      resetConfirm();
+      editingLogFolderId = btn.dataset.logFolderEdit;
+      addingLogFolder = false;
+      renderLogs();
+      document.querySelector(`[data-lf-name="${editingLogFolderId}"]`)?.focus();
+    });
+  });
+
+  document.querySelectorAll("[data-log-folder-save]").forEach(btn => {
+    const id = btn.dataset.logFolderSave;
+    btn.addEventListener("click", () => {
+      const name = (document.querySelector(`[data-lf-name="${id}"]`).value || "").trim();
+      if (!name) return;
+      const f = findLogFolder(id);
+      if (f) f.name = name;
+      editingLogFolderId = null;
+      saveLogsData();
+      renderLogs();
+    });
+  });
+
+  document.querySelectorAll("[data-log-folder-cancel]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      editingLogFolderId = null;
+      renderLogs();
+    });
+  });
+
+  // FOLDER: delete (cascades to its entries and their images)
+  document.querySelectorAll("[data-log-folder-delete]").forEach(btn => {
+    const id = btn.dataset.logFolderDelete;
+    btn.addEventListener("click", async () => {
+      if (confirmingLogFolderDeleteId === id) {
+        const orphaned = logsData.entries.filter(e => e.folderId === id);
+        for (const e of orphaned) {
+          if (e.imageFile && window.pywebview && window.pywebview.api) {
+            try { await window.pywebview.api.delete_log_image(e.id); } catch (err) {}
+          }
+        }
+        logsData.entries = logsData.entries.filter(e => e.folderId !== id);
+        logsData.folders = logsData.folders.filter(f => f.id !== id);
+        confirmingLogFolderDeleteId = null;
+        saveLogsData();
+        renderLogs();
+      } else {
+        confirmingLogFolderDeleteId = id;
+        confirmingLogEntryDeleteId = null;
+        renderLogs();
+      }
+    });
+  });
+
+  // BACK navigation
+  const backRoot = document.getElementById("logs-back-to-root");
+  if (backRoot) backRoot.addEventListener("click", () => {
+    resetConfirm();
+    selectedLogFolderId = null;
+    selectedLogEntryId = null;
+    addingLogEntry = false;
+    editingLogEntry = false;
+    renderLogs();
+  });
+
+  const backFolder = document.getElementById("logs-back-to-folder");
+  if (backFolder) backFolder.addEventListener("click", () => {
+    resetConfirm();
+    selectedLogEntryId = null;
+    editingLogEntry = false;
+    renderLogs();
+  });
+
+  // ENTRY: add
+  const addEntryBtn = document.getElementById("logs-add-entry");
+  if (addEntryBtn) addEntryBtn.addEventListener("click", () => {
+    resetConfirm();
+    addingLogEntry = true;
+    selectedLogEntryId = null;
+    editingLogEntry = false;
+    renderLogs();
+    document.getElementById("new-log-entry-title")?.focus();
+  });
+
+  const saveNewEntry = document.getElementById("save-new-log-entry");
+  if (saveNewEntry) saveNewEntry.addEventListener("click", () => {
+    let staged = {};
+    try { staged = JSON.parse(saveNewEntry.dataset.logEntryStaging || "{}"); } catch (e) {}
+    const title = (document.getElementById("new-log-entry-title").value || "").trim();
+    if (!title) return;
+    const body = (document.getElementById("new-log-entry-body").value || "").trim();
+    const type = document.getElementById("new-log-entry-type").value || "other";
+    logsData.entries.push({
+      id: staged.id || makeLogId("le"),
+      folderId: selectedLogFolderId,
+      type, title, body,
+      imageFile: staged.imageFile || null,
+    });
+    addingLogEntry = false;
+    saveLogsData();
+    renderLogs();
+  });
+
+  const cancelNewEntry = document.getElementById("cancel-new-log-entry");
+  if (cancelNewEntry) cancelNewEntry.addEventListener("click", async () => {
+    // Clean up any image attached to a not-yet-saved entry so we don't orphan it.
+    let staged = {};
+    try { staged = JSON.parse(cancelNewEntry.dataset.logEntryStaging || "{}"); } catch (e) {}
+    if (staged.id && staged.imageFile && window.pywebview && window.pywebview.api) {
+      try { await window.pywebview.api.delete_log_image(staged.id); } catch (e) {}
+    }
+    addingLogEntry = false;
+    renderLogs();
+  });
+
+  // ENTRY: open
+  document.querySelectorAll("[data-log-entry-open]").forEach(el => {
+    el.addEventListener("click", () => {
+      resetConfirm();
+      selectedLogEntryId = el.dataset.logEntryOpen;
+      editingLogEntry = false;
+      addingLogEntry = false;
+      renderLogs();
+    });
+  });
+
+  // ENTRY: edit
+  const editEntryBtn = document.getElementById("logs-edit-entry");
+  if (editEntryBtn) editEntryBtn.addEventListener("click", () => {
+    editingLogEntry = true;
+    renderLogs();
+    document.querySelector(`[data-le-title="${selectedLogEntryId}"]`)?.focus();
+  });
+
+  document.querySelectorAll("[data-log-entry-save]").forEach(btn => {
+    const id = btn.dataset.logEntrySave;
+    btn.addEventListener("click", () => {
+      const e = findLogEntry(id);
+      if (!e) return;
+      const title = (document.querySelector(`[data-le-title="${id}"]`).value || "").trim();
+      if (!title) return;
+      e.title = title;
+      e.body = (document.querySelector(`[data-le-body="${id}"]`).value || "").trim();
+      e.type = document.querySelector(`[data-le-type="${id}"]`).value || "other";
+      editingLogEntry = false;
+      saveLogsData();
+      renderLogs();
+    });
+  });
+
+  document.querySelectorAll("[data-log-entry-cancel]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      editingLogEntry = false;
+      renderLogs();
+    });
+  });
+
+  // ENTRY: delete
+  document.querySelectorAll("[data-log-entry-delete]").forEach(btn => {
+    const id = btn.dataset.logEntryDelete;
+    btn.addEventListener("click", async () => {
+      if (confirmingLogEntryDeleteId === id) {
+        const e = findLogEntry(id);
+        if (e && e.imageFile && window.pywebview && window.pywebview.api) {
+          try { await window.pywebview.api.delete_log_image(e.id); } catch (err) {}
+        }
+        logsData.entries = logsData.entries.filter(x => x.id !== id);
+        confirmingLogEntryDeleteId = null;
+        if (selectedLogEntryId === id) selectedLogEntryId = null;
+        saveLogsData();
+        renderLogs();
+      } else {
+        confirmingLogEntryDeleteId = id;
+        confirmingLogFolderDeleteId = null;
+        renderLogs();
+      }
+    });
+  });
+
+  // ENTRY: image attach / replace
+  document.querySelectorAll("[data-log-entry-image]").forEach(btn => {
+    const id = btn.dataset.logEntryImage;
+    btn.addEventListener("click", async () => {
+      if (!window.pywebview || !window.pywebview.api) return;
+      try {
+        const r = await window.pywebview.api.pick_log_image(id);
+        if (r && r.ok) {
+          const target = findLogEntry(id);
+          if (target) {
+            target.imageFile = r.filename;
+            saveLogsData();
+          } else {
+            // Add-form case — entry isn't in logsData yet. Stash filename
+            // in the SAVE button's staging blob so it persists on save.
+            const saveBtn = document.getElementById("save-new-log-entry");
+            if (saveBtn) {
+              let staged = {};
+              try { staged = JSON.parse(saveBtn.dataset.logEntryStaging || "{}"); } catch (e) {}
+              staged.imageFile = r.filename;
+              saveBtn.dataset.logEntryStaging = JSON.stringify(staged);
+            }
+          }
+          if (r.data_url) logImageCache[id] = r.data_url;
+          renderLogs();
+        }
+      } catch (e) {}
+    });
+  });
+
+  // ENTRY: image clear
+  document.querySelectorAll("[data-log-entry-image-clear]").forEach(btn => {
+    const id = btn.dataset.logEntryImageClear;
+    btn.addEventListener("click", async () => {
+      if (window.pywebview && window.pywebview.api) {
+        try { await window.pywebview.api.delete_log_image(id); } catch (e) {}
+      }
+      delete logImageCache[id];
+      const target = findLogEntry(id);
+      if (target) {
+        target.imageFile = null;
+        saveLogsData();
+      } else {
+        const saveBtn = document.getElementById("save-new-log-entry");
+        if (saveBtn) {
+          let staged = {};
+          try { staged = JSON.parse(saveBtn.dataset.logEntryStaging || "{}"); } catch (e) {}
+          staged.imageFile = null;
+          saveBtn.dataset.logEntryStaging = JSON.stringify(staged);
+        }
+      }
+      renderLogs();
+    });
+  });
+}
+
+// ===== PLAYER MODE (read-only viewer) =====
+function renderPlayerLogs(container) {
+  if (selectedLogFolderId && !findLogFolder(selectedLogFolderId)) {
+    selectedLogFolderId = null;
+    selectedLogEntryId = null;
+  }
+  if (selectedLogEntryId && !findLogEntry(selectedLogEntryId)) {
+    selectedLogEntryId = null;
+  }
+
+  if (selectedLogEntryId) {
+    container.innerHTML = renderPlayerLogEntryDetail();
+  } else if (selectedLogFolderId) {
+    container.innerHTML = renderPlayerLogFolderView();
+  } else {
+    container.innerHTML = renderPlayerLogRoot();
+  }
+  wirePlayerLogs();
+}
+
+function renderPlayerLogRoot() {
+  const folders = logsData.folders;
+  const summary = logbookSummary();
+  let body;
+  if (folders.length === 0) {
+    body = `<div class="logs-empty">No logbook imported yet. Ask your DM to send one, then import it via Settings.</div>`;
+  } else {
+    body = `<div class="logs-folder-grid">${folders.map(renderPlayerFolderCard).join("")}</div>`;
+  }
+  return `
+    <div class="logs-header">
+      <div class="logs-header-left"></div>
+      <div class="logs-title">LOGBOOK</div>
+      <div class="logs-header-right"></div>
+    </div>
+    <div class="logs-summary">${summary.entries} entr${summary.entries === 1 ? "y" : "ies"}${summary.exported ? ` · received ${escapeHtml(summary.exported)}` : ""}</div>
+    ${body}
+  `;
+}
+
+function renderPlayerFolderCard(f) {
+  const count = entriesInLogFolder(f.id).length;
+  return `
+    <div class="logs-folder-card">
+      <div class="logs-folder-name clickable" data-log-folder-open="${f.id}">${escapeHtml(f.name) || "(unnamed)"}</div>
+      <div class="logs-folder-meta">${count} entr${count === 1 ? "y" : "ies"}</div>
+    </div>
+  `;
+}
+
+function renderPlayerLogFolderView() {
+  const folder = findLogFolder(selectedLogFolderId);
+  if (!folder) return "";
+  const entries = entriesInLogFolder(folder.id);
+  const body = entries.length === 0
+    ? `<div class="logs-empty">No entries in this folder.</div>`
+    : `<div class="logs-entry-list">${entries.map(renderPlayerEntryRow).join("")}</div>`;
+  return `
+    <div class="logs-header">
+      <div class="logs-header-left">
+        <button class="btn back-btn" id="logs-back-to-root">LOGBOOK</button>
+      </div>
+      <div class="logs-title">${escapeHtml(folder.name)}</div>
+      <div class="logs-header-right"></div>
+    </div>
+    ${body}
+  `;
+}
+
+function renderPlayerEntryRow(e) {
+  return `
+    <div class="logs-entry-row">
+      <span class="logs-entry-type ${e.type}">${escapeHtml(logTypeLabel(e.type))}</span>
+      <div class="logs-entry-title clickable" data-log-entry-open="${e.id}">${escapeHtml(e.title) || "(untitled)"}</div>
+      <button class="item-edit" data-log-entry-open="${e.id}">VIEW</button>
+    </div>
+  `;
+}
+
+function renderPlayerLogEntryDetail() {
+  const entry = findLogEntry(selectedLogEntryId);
+  if (!entry) return "";
+  const folder = findLogFolder(entry.folderId);
+  const imgUrl = fetchLogImage(entry);
+  const imgHtml = imgUrl
+    ? `<div class="logs-entry-image"><img src="${imgUrl}" alt="${escapeHtml(entry.title)}" /></div>`
+    : entry.imageFile
+      ? `<div class="logs-entry-image loading">Loading image…</div>`
+      : "";
+  return `
+    <div class="logs-header">
+      <div class="logs-header-left">
+        <button class="btn back-btn" id="logs-back-to-folder">${escapeHtml(folder ? folder.name : "BACK")}</button>
+      </div>
+      <div class="logs-title">${escapeHtml(entry.title) || "(untitled)"}</div>
+      <div class="logs-header-right"></div>
+    </div>
+    <div class="logs-entry-detail">
+      <div class="logs-entry-type-row">
+        <span class="logs-entry-type ${entry.type}">${escapeHtml(logTypeLabel(entry.type))}</span>
+      </div>
+      ${imgHtml}
+      <div class="logs-entry-body">${escapeHtml(entry.body || "")}</div>
+    </div>
+  `;
+}
+
+function wirePlayerLogs() {
+  document.querySelectorAll("[data-log-folder-open]").forEach(el => {
+    el.addEventListener("click", () => {
+      selectedLogFolderId = el.dataset.logFolderOpen;
+      selectedLogEntryId = null;
+      renderLogs();
+    });
+  });
+
+  document.querySelectorAll("[data-log-entry-open]").forEach(el => {
+    el.addEventListener("click", () => {
+      selectedLogEntryId = el.dataset.logEntryOpen;
+      renderLogs();
+    });
+  });
+
+  const backRoot = document.getElementById("logs-back-to-root");
+  if (backRoot) backRoot.addEventListener("click", () => {
+    selectedLogFolderId = null;
+    selectedLogEntryId = null;
+    renderLogs();
+  });
+
+  const backFolder = document.getElementById("logs-back-to-folder");
+  if (backFolder) backFolder.addEventListener("click", () => {
+    selectedLogEntryId = null;
+    renderLogs();
+  });
+}
+
+// ----- Settings IMPORT LOGBOOK button (player mode only) -----
+function wireImportLogbookButton() {
+  const btn = document.getElementById("import-logbook");
+  const status = document.getElementById("import-logbook-status");
+  if (!btn || !status) return;
+  btn.addEventListener("click", async () => {
+    if (!window.pywebview || !window.pywebview.api) return;
+    status.className = "update-status";
+    status.textContent = "Importing…";
+    btn.disabled = true;
+    try {
+      const r = await window.pywebview.api.import_logbook();
+      if (!r.ok) {
+        if (r.error === "Cancelled.") {
+          status.textContent = "";
+        } else {
+          status.classList.add("err");
+          status.textContent = r.error || "Import failed.";
+        }
+      } else {
+        await loadLogsData();
+        selectedLogFolderId = null;
+        selectedLogEntryId = null;
+        logImageCache = {};
+        renderLogs();
+        status.classList.add("ok");
+        status.textContent = "Logbook imported.";
+      }
+    } catch (e) {
+      status.classList.add("err");
+      status.textContent = "Import failed.";
+    }
+    btn.disabled = false;
+  });
+}
+
+// Hide the IMPORT LOGBOOK row when the DM is the active mode (DM doesn't
+// import — they author). Called whenever mode changes.
+function refreshImportLogbookVisibility() {
+  const row = document.getElementById("settings-import-row");
+  if (!row) return;
+  row.style.display = settings.mode === "player" ? "" : "none";
 }
 
 // ============================================================

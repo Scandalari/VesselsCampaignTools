@@ -35,9 +35,8 @@
       </div>
     </section>
     <section class="view" data-view="logs">
-      <div class="empty">
-        <h1>LOGS</h1>
-        <p class="subtle">No entries.</p>
+      <div class="logs-container" id="logs">
+        <!-- rendered by app.js -->
       </div>
     </section>
     <section class="view" data-view="notes">
@@ -89,6 +88,12 @@
           <button id="check-update" class="btn">CHECK FOR UPDATE</button>
         </div>
         <div id="update-status" class="update-status"></div>
+
+        <div class="row" id="settings-import-row">
+          <span class="row-label">Logbook</span>
+          <button id="import-logbook" class="btn">IMPORT LOGBOOK</button>
+        </div>
+        <div id="import-logbook-status" class="update-status"></div>
       </div>
     </section>
   </main>
