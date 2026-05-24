@@ -1266,9 +1266,12 @@ function wireConfigInputs() {
     saveAndRerender();
   });
 
-  // Abilities
+  // Abilities — clamp + rerender only on blur/Enter ("change"), never on every
+  // keystroke. Re-rendering mid-type redraws the whole sheet under the cursor,
+  // and number fields lose the text caret across that swap, so typing "17" over
+  // "10" ballooned to "117" and got clamped to 30.
   document.querySelectorAll(".cfg-ability").forEach(input => {
-    input.addEventListener("input", e => {
+    input.addEventListener("change", e => {
       const ab = e.target.dataset.ab;
       character.abilities[ab] = clamp(Number(e.target.value), 1, 30);
       saveAndRerender();
