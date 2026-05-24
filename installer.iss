@@ -3,7 +3,7 @@
 ; Output: installer-output\KizunaTablet-Setup.exe
 
 #define MyAppName "Kizuna Tablet"
-#define MyAppVersion "1.0.15"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Scandalari"
 #define MyAppExeName "KizunaTablet.exe"
 

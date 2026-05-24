@@ -31,12 +31,13 @@ const SKILLS = {
 const ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];
 
 const CLASSES = [
-  "Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk",
+  "Artificer", "Barbarian", "Bard", "Cleric", "Druid", "Fighter", "Monk",
   "Paladin", "Ranger", "Rogue", "Sorcerer", "Warlock", "Wizard"
 ];
 
 // Casting stat per class. Non-casters omitted.
 const CASTING_ABILITY = {
+  "Artificer": "INT",
   "Bard": "CHA", "Cleric": "WIS", "Druid": "WIS",
   "Sorcerer": "CHA", "Wizard": "INT",
   "Paladin": "CHA", "Ranger": "WIS",
@@ -95,6 +96,31 @@ const HALF_CASTER_SLOTS = [
   [4,3,3,3,2],
 ];
 
+// Artificer spell slots. Like a half caster but rounds UP, so unlike
+// Paladin/Ranger it has a slot at level 1. Index 0 = level 1.
+const ARTIFICER_SLOTS = [
+  [2,0,0,0,0],
+  [2,0,0,0,0],
+  [3,0,0,0,0],
+  [3,0,0,0,0],
+  [4,2,0,0,0],
+  [4,2,0,0,0],
+  [4,3,0,0,0],
+  [4,3,0,0,0],
+  [4,3,2,0,0],
+  [4,3,2,0,0],
+  [4,3,3,0,0],
+  [4,3,3,0,0],
+  [4,3,3,1,0],
+  [4,3,3,1,0],
+  [4,3,3,2,0],
+  [4,3,3,2,0],
+  [4,3,3,3,1],
+  [4,3,3,3,1],
+  [4,3,3,3,2],
+  [4,3,3,3,2],
+];
+
 // Warlock pact slots. Each row = [slot_level, count].
 const PACT_SLOTS = [
   [1,1], [1,2], [2,2], [2,2], [3,2], [3,2], [4,2], [4,2], [5,2], [5,2],
@@ -121,6 +147,8 @@ let character = null;
 let activeView = "dashboard";
 let configMode = false;
 let portraitDataUrl = null;
+// Which spell-slot action currently has its UPCAST list expanded (view mode).
+let expandedUpcastId = null;
 
 // Inventory UI state. addingItem and editingItemId are mutually exclusive
 // (only one form open at a time). expandedItemId is independent.
@@ -622,6 +650,8 @@ function rebuildSpellSlots(c) {
     table = FULL_CASTER_SLOTS[lv - 1];
   } else if (["Paladin","Ranger"].includes(cls)) {
     table = HALF_CASTER_SLOTS[lv - 1];
+  } else if (cls === "Artificer") {
+    table = ARTIFICER_SLOTS[lv - 1];
   }
   const newSlots = {};
   if (table) {
@@ -1156,28 +1186,74 @@ function renderActions(c) {
       html += `<div class="subtle" style="font-size:9px; margin:6px 0 4px; letter-spacing:0.18em;">${group.toUpperCase()}</div>`;
       html += `<div class="attacks-list">`;
       items.forEach(a => {
+        const sl = Number(a.slot_level) || 0;
+        const up = a.upcast || "none";
         if (configMode) {
           html += `
-            <div class="attack-row" data-action-id="${a.id}">
-              <input class="attack-name-input" data-field="name" type="text" value="${escapeHtml(a.name)}" placeholder="Name" />
-              <input data-field="hit_mod" type="number" value="${a.hit_mod}" />
-              <input data-field="damage" type="text" value="${escapeHtml(a.damage)}" placeholder="1d8+3" />
-              <select data-field="action_type">
-                ${["Action","Bonus","Reaction"].map(t => `<option value="${t}" ${a.action_type === t ? "selected" : ""}>${t}</option>`).join("")}
-              </select>
-              <button class="attack-delete" data-delete-action="${a.id}" title="delete">×</button>
+            <div class="attack-cfg" data-action-id="${a.id}">
+              <div class="attack-row">
+                <input class="attack-name-input" data-field="name" type="text" value="${escapeHtml(a.name)}" placeholder="Name" />
+                <input data-field="hit_mod" type="number" value="${a.hit_mod}" />
+                <input data-field="damage" type="text" value="${escapeHtml(a.damage)}" placeholder="1d8+3" />
+                <select data-field="action_type">
+                  ${["Action","Bonus","Reaction"].map(t => `<option value="${t}" ${a.action_type === t ? "selected" : ""}>${t}</option>`).join("")}
+                </select>
+                <button class="attack-delete" data-delete-action="${a.id}" title="delete">×</button>
+              </div>
+              <div class="attack-spell-cfg">
+                <span class="aspell-label">SLOT</span>
+                <select data-field="slot_level">
+                  <option value="0" ${sl === 0 ? "selected" : ""}>—</option>
+                  ${[1,2,3,4,5,6,7,8,9].map(n => `<option value="${n}" ${sl === n ? "selected" : ""}>${ordinal(n)}</option>`).join("")}
+                </select>
+                ${sl > 0 ? `
+                  <select data-field="upcast">
+                    <option value="none" ${up === "none" ? "selected" : ""}>No upcast</option>
+                    <option value="dice" ${up === "dice" ? "selected" : ""}>+ Dice / level</option>
+                    <option value="targets" ${up === "targets" ? "selected" : ""}>+ Targets / level</option>
+                  </select>
+                  ${up !== "none" ? `<input data-field="upcast_amount" type="text" class="aspell-amount" value="${escapeHtml(a.upcast_amount || "")}" placeholder="${up === "dice" ? "1d8" : "1"}" />` : ``}
+                ` : ``}
+              </div>
             </div>
           `;
         } else {
           html += `
-            <div class="attack-row">
-              <div class="attack-name">${escapeHtml(a.name)}</div>
-              <div class="attack-hit">${fmtMod(Number(a.hit_mod) || 0)}</div>
-              <div class="attack-damage">${escapeHtml(a.damage) || "—"}</div>
-              <div class="attack-type">${a.action_type.toUpperCase()}</div>
-              <div></div>
-            </div>
-          `;
+            <div class="attack-view">
+              <div class="attack-row">
+                <div class="attack-name">${escapeHtml(a.name)}</div>
+                <div class="attack-hit">${fmtMod(Number(a.hit_mod) || 0)}</div>
+                <div class="attack-damage">${escapeHtml(a.damage) || "—"}</div>
+                <div class="attack-type">${a.action_type.toUpperCase()}</div>
+                <div></div>
+              </div>`;
+          if (sl > 0) {
+            const baseSlot = c.spell_slots[String(sl)];
+            const baseAvail = baseSlot && baseSlot.used < baseSlot.max;
+            html += `<div class="cast-bar">
+              <button class="cast-btn" data-cast="${a.id}" data-cast-level="${sl}" ${baseAvail ? "" : "disabled"}>CAST ${ordinal(sl)}</button>
+              ${up !== "none" ? `<button class="upcast-btn ${expandedUpcastId === a.id ? "open" : ""}" data-upcast-toggle="${a.id}">UPCAST</button>` : ``}
+            </div>`;
+            if (up !== "none" && expandedUpcastId === a.id) {
+              const higher = Object.keys(c.spell_slots)
+                .map(Number)
+                .filter(L => L > sl && c.spell_slots[String(L)].used < c.spell_slots[String(L)].max)
+                .sort((x, y) => x - y);
+              html += `<div class="upcast-list">`;
+              if (higher.length === 0) {
+                html += `<div class="subtle" style="font-size:10px; padding:4px 6px;">No higher slots available.</div>`;
+              } else {
+                higher.forEach(L => {
+                  html += `<button class="upcast-opt" data-cast="${a.id}" data-cast-level="${L}">
+                    <span class="upcast-opt-lvl">${ordinal(L)}</span>
+                    <span class="upcast-opt-eff">${escapeHtml(actionEffectAt(a, L))}</span>
+                  </button>`;
+                });
+              }
+              html += `</div>`;
+            }
+          }
+          html += `</div>`;
         }
       });
       html += `</div>`;
@@ -1207,6 +1283,50 @@ function ordinal(n) {
   const suf = ["th","st","nd","rd"];
   const v = n % 100;
   return n + (suf[(v - 20) % 10] || suf[v] || suf[0]);
+}
+
+// Pull the first "NdM(+/-K)" term out of a free-text damage/dice string.
+function parseDice(str) {
+  const m = String(str || "").match(/(\d+)\s*d\s*(\d+)\s*([+-]\s*\d+)?/i);
+  if (!m) return null;
+  return {
+    count: Number(m[1]),
+    size: Number(m[2]),
+    flat: m[3] ? Number(m[3].replace(/\s+/g, "")) : 0,
+  };
+}
+
+// What to roll when an action is cast at the given slot level, applying its
+// upcast rule. Dice upcasts merge into the base when the die size matches
+// (1d8 base + 2 levels of 1d8 -> 3d8); otherwise they're shown as a separate
+// term. Targets upcasts just report the extra targets.
+function actionEffectAt(a, level) {
+  const base = Number(a.slot_level) || 0;
+  const extra = Math.max(0, level - base);
+  const dmg = a.damage || "";
+  const mode = a.upcast || "none";
+
+  if (mode === "targets") {
+    const add = extra * (Number(a.upcast_amount) || 0);
+    if (add <= 0) return dmg || "—";
+    return dmg ? `${dmg} · +${add} tgt` : `+${add} tgt`;
+  }
+
+  if (mode === "dice") {
+    const up = parseDice(a.upcast_amount);
+    if (!up || extra <= 0) return dmg || "—";
+    const baseD = parseDice(dmg);
+    if (baseD && baseD.size === up.size) {
+      const count = baseD.count + extra * up.count;
+      const flat = baseD.flat;
+      const flatStr = flat > 0 ? `+${flat}` : (flat < 0 ? `${flat}` : "");
+      return `${count}d${baseD.size}${flatStr}`;
+    }
+    const addStr = `+${extra * up.count}d${up.size}`;
+    return dmg ? `${dmg} ${addStr}` : addStr;
+  }
+
+  return dmg || "—";
 }
 
 // ============================================================
@@ -1330,17 +1450,19 @@ function wireConfigInputs() {
     });
   });
 
-  // Attack rows in config
-  document.querySelectorAll(".attack-row[data-action-id]").forEach(row => {
+  // Attack rows in config (the wrapper holds both the main row and the
+  // spell-slot sub-row, so query the wrapper for all data-field inputs).
+  document.querySelectorAll(".attack-cfg[data-action-id]").forEach(row => {
     const id = row.dataset.actionId;
     row.querySelectorAll("[data-field]").forEach(input => {
       input.addEventListener("input", e => {
         const action = character.actions.find(a => a.id === id);
         if (!action) return;
         const field = e.target.dataset.field;
-        if (field === "hit_mod") action[field] = Number(e.target.value) || 0;
+        if (field === "hit_mod" || field === "slot_level") action[field] = Number(e.target.value) || 0;
         else action[field] = e.target.value;
-        if (field === "action_type") saveAndRerender();
+        // Dropdowns that reveal/hide other fields need a redraw; text saves quietly.
+        if (field === "action_type" || field === "slot_level" || field === "upcast") saveAndRerender();
         else saveCharacter();
       });
     });
@@ -1358,6 +1480,7 @@ function wireConfigInputs() {
     character.actions.push({
       id: "a" + Date.now() + Math.random().toString(36).slice(2, 7),
       name: "", hit_mod: 0, damage: "", action_type: type,
+      slot_level: 0, upcast: "none", upcast_amount: "",
     });
     saveAndRerender();
   });
@@ -1415,6 +1538,25 @@ function wireViewInteractions() {
       if (idx < slot.used) slot.used = idx;
       else slot.used = idx + 1;
       saveAndRerender();
+    });
+  });
+
+  // Cast / upcast buttons on spell-slot actions.
+  document.querySelectorAll("[data-cast]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const lv = String(btn.dataset.castLevel);
+      const slot = character.spell_slots[lv];
+      if (!slot || slot.used >= slot.max) return;
+      slot.used += 1;
+      expandedUpcastId = null;
+      saveAndRerender();
+    });
+  });
+  document.querySelectorAll("[data-upcast-toggle]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.upcastToggle;
+      expandedUpcastId = expandedUpcastId === id ? null : id;
+      renderDashboard();
     });
   });
 }

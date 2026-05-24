@@ -803,6 +803,99 @@ html, body {
 }
 .add-attack-row select, .add-attack-row .btn { font-size: 10px; padding: 4px 8px; }
 
+/* spell-slot designation sub-row (config mode) */
+.attack-cfg { display: flex; flex-direction: column; }
+.attack-spell-cfg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 3px 6px 4px;
+}
+.aspell-label {
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: #8a7a9a;
+}
+.attack-spell-cfg select,
+.attack-spell-cfg input {
+  background: #0a0a14;
+  border: 1px solid #1a1a2e;
+  color: #e6e0f0;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 5px;
+}
+.attack-spell-cfg .aspell-amount { width: 64px; }
+
+/* cast / upcast controls (view mode) */
+.cast-bar {
+  display: flex;
+  gap: 6px;
+  padding: 3px 6px 0;
+}
+.cast-btn, .upcast-btn {
+  background: transparent;
+  border: 1px solid #00d4e0;
+  color: #00d4e0;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 3px 9px;
+  cursor: pointer;
+  transition: background 120ms, box-shadow 120ms, opacity 120ms;
+}
+.cast-btn:hover, .upcast-btn:hover { background: rgba(0, 212, 224, 0.1); }
+.cast-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  border-color: #1a1a2e;
+  color: #8a7a9a;
+  background: transparent;
+}
+.upcast-btn { border-color: #ff2a8a; color: #ff2a8a; }
+.upcast-btn:hover { background: rgba(255, 42, 138, 0.1); }
+.upcast-btn.open {
+  background: rgba(255, 42, 138, 0.15);
+  box-shadow: 0 0 8px rgba(255, 42, 138, 0.35);
+}
+.upcast-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 6px 2px;
+}
+.upcast-opt {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid #1a1a2e;
+  color: #e6e0f0;
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 120ms, border-color 120ms;
+}
+.upcast-opt:hover {
+  background: rgba(255, 42, 138, 0.08);
+  border-color: #ff2a8a;
+}
+.upcast-opt-lvl {
+  color: #ff2a8a;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+.upcast-opt-eff {
+  font-family: "Consolas", monospace;
+  color: #fbbf24;
+  font-weight: 700;
+}
+
 /* ============================================================
    INVENTORY
    ============================================================ */
