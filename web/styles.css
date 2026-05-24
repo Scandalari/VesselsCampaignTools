@@ -938,6 +938,14 @@ html, body {
 }
 .row-roll:hover { background: rgba(255, 42, 138, 0.12); }
 
+/* clickable d20 rolls: skill/save rows + an action's own hit modifier */
+.save-row.rollable, .skill-row.rollable { cursor: pointer; }
+.save-row.rollable:hover, .skill-row.rollable:hover {
+  background: rgba(0, 212, 224, 0.06);
+}
+.attack-hit.rollable { cursor: pointer; }
+.attack-hit.rollable:hover { text-shadow: 0 0 8px rgba(0, 212, 224, 0.7); }
+
 /* center-screen roll result overlay */
 #modal-root { display: none; }
 #modal-root.active {

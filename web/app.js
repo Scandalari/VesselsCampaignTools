@@ -1156,8 +1156,11 @@ function renderSavingThrows(c) {
     const dotClass = prof ? "proficient" : "";
     const clickAttr = configMode ? `data-save="${ab}"` : "";
     const cursor = configMode ? "cursor:pointer;" : "cursor:default;";
+    // In view mode the whole row rolls a d20 + this save; in config the dot
+    // toggles proficiency instead.
+    const rowAttr = configMode ? "" : `rollable" data-roll-save="${ab}`;
     return `
-      <div class="save-row">
+      <div class="save-row ${rowAttr}">
         <div class="prof-dot ${dotClass}" ${clickAttr} style="${cursor}"></div>
         <div class="skill-name">${ab}</div>
         <div class="skill-mod">${fmtMod(mod)}</div>
@@ -1177,8 +1180,11 @@ function renderSkills(c) {
     const dotClass = state === "expertise" ? "expertise" : state === "proficient" ? "proficient" : "";
     const clickAttr = configMode ? `data-skill="${skill}"` : "";
     const cursor = configMode ? "cursor:pointer;" : "cursor:default;";
+    // View mode: click the row to roll a d20 + this skill. Config: dot cycles
+    // proficiency.
+    const rowAttr = configMode ? "" : `rollable" data-roll-skill="${skill}`;
     return `
-      <div class="skill-row">
+      <div class="skill-row ${rowAttr}">
         <div class="prof-dot ${dotClass}" ${clickAttr} style="${cursor}"></div>
         <div class="skill-name">${skill}</div>
         <div class="skill-mod">${fmtMod(mod)}</div>
@@ -1346,7 +1352,7 @@ function renderActions(c, opts) {
             <div class="attack-view">
               <div class="attack-row">
                 <div class="attack-name">${escapeHtml(a.name)}</div>
-                <div class="attack-hit">${fmtMod(Number(a.hit_mod) || 0)}</div>
+                <div class="attack-hit rollable" data-roll-hit="${a.id}" title="roll to hit">${fmtMod(Number(a.hit_mod) || 0)}</div>
                 <div class="attack-damage">${escapeHtml(a.damage) || "—"}</div>
                 <div class="attack-type">${a.action_type.toUpperCase()}</div>
                 <div>${canRoll ? `<button class="row-roll" data-roll-damage="${a.id}">ROLL</button>` : ""}</div>
@@ -1505,6 +1511,13 @@ function rollDamageForAction(a, level) {
   if (flat) breakdown += `${breakdown ? " " : ""}${flat > 0 ? "+" : "−"} ${Math.abs(flat)}`;
   breakdown += ` = ${total}`;
   return { total, breakdown };
+}
+
+// A plain d20 + flat modifier roll (to-hit, skill check, saving throw).
+function d20Roll(title, mod) {
+  const d20 = rollOne(20);
+  const total = d20 + mod;
+  return { title, total, breakdown: `d20 (${d20}) ${mod >= 0 ? "+" : "−"} ${Math.abs(mod)} = ${total}` };
 }
 
 function showRoll(result) { rollResult = result; renderRollModal(); }
@@ -1805,6 +1818,30 @@ function wireViewInteractions() {
     });
   });
 
+  // Roll a specific action's own hit modifier (alternative to the generic
+  // MELEE/RANGED/SPELL buttons).
+  document.querySelectorAll("[data-roll-hit]").forEach(el => {
+    el.addEventListener("click", () => {
+      const action = sheet.actions.find(a => a.id === el.dataset.rollHit);
+      if (!action) return;
+      showRoll(d20Roll(`${action.name || "Attack"} · To Hit`, Number(action.hit_mod) || 0));
+    });
+  });
+
+  // Skill checks and saving throws: click the row to roll d20 + its modifier.
+  document.querySelectorAll("[data-roll-skill]").forEach(row => {
+    row.addEventListener("click", () => {
+      const skill = row.dataset.rollSkill;
+      showRoll(d20Roll(`${skill} Check`, calcSkillMod(sheet, skill)));
+    });
+  });
+  document.querySelectorAll("[data-roll-save]").forEach(row => {
+    row.addEventListener("click", () => {
+      const ab = row.dataset.rollSave;
+      showRoll(d20Roll(`${ab} Save`, calcSaveMod(sheet, ab)));
+    });
+  });
+
   // To-hit rolls: d20 + proficiency + the relevant ability (or spell attack).
   document.querySelectorAll("[data-roll-attack]").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -1814,9 +1851,7 @@ function wireViewInteractions() {
       if (kind === "melee") { bonus = pb + abilityMod(sheet.abilities.STR); label = "Melee Attack"; }
       else if (kind === "ranged") { bonus = pb + abilityMod(sheet.abilities.DEX); label = "Ranged Attack"; }
       else if (kind === "spell") { bonus = calcSpellAttack(sheet) || 0; label = "Spell Attack"; }
-      const d20 = rollOne(20);
-      const total = d20 + bonus;
-      showRoll({ title: label, total, breakdown: `d20 (${d20}) ${bonus >= 0 ? "+" : "−"} ${Math.abs(bonus)} = ${total}` });
+      showRoll(d20Roll(label, bonus));
     });
   });
 
