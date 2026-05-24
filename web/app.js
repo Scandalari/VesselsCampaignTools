@@ -149,6 +149,8 @@ let configMode = false;
 let portraitDataUrl = null;
 // Which spell-slot action currently has its UPCAST list expanded (view mode).
 let expandedUpcastId = null;
+// Active center-screen roll result, or null when the overlay is hidden.
+let rollResult = null;
 
 // Inventory UI state. addingItem and editingItemId are mutually exclusive
 // (only one form open at a time). expandedItemId is independent.
@@ -1178,6 +1180,17 @@ function renderActions(c) {
   // Attacks list, grouped by type
   html += `<div class="actions-section">
     <div class="actions-section-header">ATTACKS &amp; ABILITIES</div>`;
+  if (!configMode) {
+    const pb = profBonus(c.level);
+    const melee = pb + abilityMod(c.abilities.STR);
+    const ranged = pb + abilityMod(c.abilities.DEX);
+    const spell = calcSpellAttack(c);
+    html += `<div class="tohit-row">
+      <button class="tohit-btn" data-roll-attack="melee">MELEE <span>${fmtMod(melee)}</span></button>
+      <button class="tohit-btn" data-roll-attack="ranged">RANGED <span>${fmtMod(ranged)}</span></button>
+      ${spell !== null ? `<button class="tohit-btn" data-roll-attack="spell">SPELL <span>${fmtMod(spell)}</span></button>` : ``}
+    </div>`;
+  }
   const groups = ["Action", "Bonus", "Reaction"];
   groups.forEach(group => {
     const items = (c.actions || []).filter(a => a.action_type === group);
@@ -1218,6 +1231,7 @@ function renderActions(c) {
             </div>
           `;
         } else {
+          const canRoll = sl === 0 && (a.damage || "").trim() !== "";
           html += `
             <div class="attack-view">
               <div class="attack-row">
@@ -1225,7 +1239,7 @@ function renderActions(c) {
                 <div class="attack-hit">${fmtMod(Number(a.hit_mod) || 0)}</div>
                 <div class="attack-damage">${escapeHtml(a.damage) || "—"}</div>
                 <div class="attack-type">${a.action_type.toUpperCase()}</div>
-                <div></div>
+                <div>${canRoll ? `<button class="row-roll" data-roll-damage="${a.id}">ROLL</button>` : ""}</div>
               </div>`;
           if (sl > 0) {
             const baseSlot = c.spell_slots[String(sl)];
@@ -1327,6 +1341,79 @@ function actionEffectAt(a, level) {
   }
 
   return dmg || "—";
+}
+
+// ============================================================
+// DICE ROLLING
+// ============================================================
+
+function rollOne(size) { return 1 + Math.floor(Math.random() * size); }
+
+// Break a free-text damage string into dice terms + a single flat modifier.
+// Handles multiple terms like "2d6+1d4+3".
+function parseDamage(str) {
+  const s = String(str || "");
+  const diceRe = /([+-]?)\s*(\d+)\s*[dD]\s*(\d+)/g;
+  const dice = [];
+  let m;
+  while ((m = diceRe.exec(s)) !== null) {
+    dice.push({ count: Number(m[2]), size: Number(m[3]), sign: m[1] === "-" ? -1 : 1 });
+  }
+  // Strip the dice terms, then sum whatever standalone numbers are left as flat.
+  const rest = s.replace(/([+-]?)\s*(\d+)\s*[dD]\s*(\d+)/g, " ");
+  let flat = 0;
+  const flatRe = /([+-]?)\s*(\d+)/g;
+  let f;
+  while ((f = flatRe.exec(rest)) !== null) {
+    flat += (f[1] === "-" ? -1 : 1) * Number(f[2]);
+  }
+  return { dice, flat };
+}
+
+// Roll an action's damage at a given cast level, adding upcast dice when set.
+// Returns null when there's nothing rollable (utility spells with no dice/flat).
+function rollDamageForAction(a, level) {
+  const { dice, flat } = parseDamage(a.damage);
+  const terms = dice.map(d => ({ ...d }));
+  if ((a.upcast || "none") === "dice") {
+    const base = Number(a.slot_level) || 0;
+    const extra = Math.max(0, (Number(level) || base) - base);
+    const up = parseDice(a.upcast_amount);
+    if (up && extra > 0) terms.push({ count: extra * up.count, size: up.size, sign: 1 });
+  }
+  if (terms.length === 0 && flat === 0) return null;
+
+  let total = 0;
+  const parts = [];
+  terms.forEach(t => {
+    const vals = [];
+    for (let i = 0; i < t.count; i++) { const v = rollOne(t.size); vals.push(v); total += t.sign * v; }
+    parts.push(`${t.sign < 0 ? "−" : ""}${t.count}d${t.size} [${vals.join(", ")}]`);
+  });
+  total += flat;
+  let breakdown = parts.join(" + ");
+  if (flat) breakdown += `${breakdown ? " " : ""}${flat > 0 ? "+" : "−"} ${Math.abs(flat)}`;
+  breakdown += ` = ${total}`;
+  return { total, breakdown };
+}
+
+function showRoll(result) { rollResult = result; renderRollModal(); }
+function hideRoll() { rollResult = null; renderRollModal(); }
+
+function renderRollModal() {
+  const root = document.getElementById("modal-root");
+  if (!root) return;
+  if (!rollResult) { root.classList.remove("active"); root.innerHTML = ""; return; }
+  root.classList.add("active");
+  root.innerHTML = `
+    <div class="roll-backdrop" data-roll-dismiss></div>
+    <div class="roll-card">
+      <div class="roll-title">${escapeHtml(rollResult.title)}</div>
+      <div class="roll-total">${rollResult.total}</div>
+      <div class="roll-breakdown">${escapeHtml(rollResult.breakdown)}</div>
+      <button class="btn" data-roll-dismiss>OK</button>
+    </div>`;
+  root.querySelectorAll("[data-roll-dismiss]").forEach(el => el.addEventListener("click", hideRoll));
 }
 
 // ============================================================
@@ -1541,15 +1628,19 @@ function wireViewInteractions() {
     });
   });
 
-  // Cast / upcast buttons on spell-slot actions.
+  // Cast / upcast buttons on spell-slot actions: expend the slot, then roll
+  // the damage dice for that cast level (skipped for slotless utility spells).
   document.querySelectorAll("[data-cast]").forEach(btn => {
     btn.addEventListener("click", () => {
-      const lv = String(btn.dataset.castLevel);
-      const slot = character.spell_slots[lv];
+      const lv = Number(btn.dataset.castLevel);
+      const action = character.actions.find(a => a.id === btn.dataset.cast);
+      const slot = character.spell_slots[String(lv)];
       if (!slot || slot.used >= slot.max) return;
       slot.used += 1;
       expandedUpcastId = null;
+      const roll = action ? rollDamageForAction(action, lv) : null;
       saveAndRerender();
+      if (roll) showRoll({ title: `${action.name || "Spell"} · ${ordinal(lv)}`, total: roll.total, breakdown: roll.breakdown });
     });
   });
   document.querySelectorAll("[data-upcast-toggle]").forEach(btn => {
@@ -1557,6 +1648,31 @@ function wireViewInteractions() {
       const id = btn.dataset.upcastToggle;
       expandedUpcastId = expandedUpcastId === id ? null : id;
       renderDashboard();
+    });
+  });
+
+  // Roll damage on a non-spell action (weapon attacks, etc.).
+  document.querySelectorAll("[data-roll-damage]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const action = character.actions.find(a => a.id === btn.dataset.rollDamage);
+      if (!action) return;
+      const roll = rollDamageForAction(action, Number(action.slot_level) || 0);
+      if (roll) showRoll({ title: action.name || "Damage", total: roll.total, breakdown: roll.breakdown });
+    });
+  });
+
+  // To-hit rolls: d20 + proficiency + the relevant ability (or spell attack).
+  document.querySelectorAll("[data-roll-attack]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.rollAttack;
+      const pb = profBonus(character.level);
+      let bonus = 0, label = "Attack";
+      if (kind === "melee") { bonus = pb + abilityMod(character.abilities.STR); label = "Melee Attack"; }
+      else if (kind === "ranged") { bonus = pb + abilityMod(character.abilities.DEX); label = "Ranged Attack"; }
+      else if (kind === "spell") { bonus = calcSpellAttack(character) || 0; label = "Spell Attack"; }
+      const d20 = rollOne(20);
+      const total = d20 + bonus;
+      showRoll({ title: label, total, breakdown: `d20 (${d20}) ${bonus >= 0 ? "+" : "−"} ${Math.abs(bonus)} = ${total}` });
     });
   });
 }
