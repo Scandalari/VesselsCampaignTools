@@ -989,6 +989,79 @@ html, body {
 }
 
 /* ============================================================
+   ALLIES (nested mini-sheets on the player dashboard)
+   ============================================================ */
+.ally-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.ally-bar::-webkit-scrollbar { height: 0; width: 0; }
+.ally-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid #b54ad6;
+  padding: 4px 6px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+.ally-chip.ally-chip-view {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.ally-chip-name {
+  background: transparent;
+  border: none;
+  color: #00d4e0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+}
+.ally-chip-name:hover { text-shadow: 0 0 8px rgba(0, 212, 224, 0.5); }
+.ally-chip-hp {
+  font-family: "Consolas", monospace;
+  font-size: 11px;
+  color: #ff2a8a;
+  font-weight: 700;
+}
+.ally-hp-amt {
+  width: 38px;
+  background: #0a0a14;
+  border: 1px solid #1a1a2e;
+  color: #e6e0f0;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 4px;
+}
+.ally-chip-del {
+  background: transparent;
+  border: none;
+  color: #ff5577;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+.ally-chip-del:hover { text-shadow: 0 0 6px rgba(255, 85, 119, 0.6); }
+.ally-add { flex: 0 0 auto; align-self: center; }
+.ally-return { border-color: #b54ad6; color: #b54ad6; }
+.ally-return:hover { background: rgba(181, 74, 214, 0.12); }
+.ally-type-input { width: 100%; max-width: 420px; }
+
+/* Ally sheet drops the SKILLS column, so the bottom row is two columns. */
+.dashboard.ally-mode .dash-bottom {
+  grid-template-columns: 280px 1fr;
+}
+
+/* ============================================================
    INVENTORY
    ============================================================ */
 .inventory {

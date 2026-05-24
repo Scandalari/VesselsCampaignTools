@@ -151,6 +151,9 @@ let portraitDataUrl = null;
 let expandedUpcastId = null;
 // Active center-screen roll result, or null when the overlay is hidden.
 let rollResult = null;
+// When set, the dashboard shows that nested ally's sheet instead of the main
+// character's. null = main character.
+let activeAllyId = null;
 
 // Inventory UI state. addingItem and editingItemId are mutually exclusive
 // (only one form open at a time). expandedItemId is independent.
@@ -492,6 +495,30 @@ function createDefaultCharacter() {
     proficiencies: { armor: "", weapons: "", tools: "", languages: "" },
     inventory: [],
     notes: { folders: [], items: [] },
+    allies: [],
+  };
+}
+
+// A nested ally is a trimmed character sheet: no class/origin/level/skills
+// column and no spell slots (allies can't cast). Proficiency bonus is
+// inherited from the main character at render time.
+function newAlly() {
+  const skills = {};
+  Object.keys(SKILLS).forEach(s => { skills[s] = "none"; });
+  return {
+    id: "al" + Date.now() + Math.random().toString(36).slice(2, 7),
+    name: "",
+    ally_type: "",
+    icon_filename: null,
+    abilities: { STR: 10, DEX: 10, CON: 10, INT: 10, WIS: 10, CHA: 10 },
+    saves_proficient: [],
+    skills,
+    speed: 30,
+    armor: { type: "unarmored", base_ac: 10, shield: false, misc_bonus: 0 },
+    hp: { current: 1, max: 1, temp: 0 },
+    actions: [],
+    action_economy: { Action: true, Bonus: true, Reaction: true, Movement: true, Object: true },
+    proficiencies: { armor: "", weapons: "", tools: "", languages: "" },
   };
 }
 
@@ -532,6 +559,7 @@ async function loadCharacter() {
     if (c && typeof c === "object") character = c;
   } catch (e) {}
   if (!character) character = createDefaultCharacter();
+  if (!Array.isArray(character.allies)) character.allies = [];
   migrateInventory(character);
   migrateNotes(character);
   // Always rebuild spell slots after load so changing class outside the app
@@ -796,17 +824,36 @@ function restoreFocus(container, info) {
   }
 }
 
+// True when we're currently viewing/editing a nested ally rather than the
+// main character.
+function isAllyActive() {
+  return !!(activeAllyId && (character.allies || []).some(a => a.id === activeAllyId));
+}
+
+// The sheet the dashboard is currently showing: the active ally or the main
+// character. Allies inherit the character's level so proficiency-based math
+// (saves, passives, to-hit) lands on the right bonus.
+function currentSheet() {
+  if (activeAllyId) {
+    const ally = (character.allies || []).find(a => a.id === activeAllyId);
+    if (ally) { ally.level = character.level; return ally; }
+  }
+  return character;
+}
+
 function renderDashboard() {
   const dash = document.getElementById("dashboard");
   if (!dash) return;
   const focus = captureFocus(dash);
   dash.classList.toggle("config-mode", configMode);
-  dash.innerHTML = renderDashboardHTML(character);
+  dash.classList.toggle("ally-mode", isAllyActive());
+  dash.innerHTML = renderDashboardHTML(currentSheet());
   wireDashboard();
   restoreFocus(dash, focus);
 }
 
 function renderDashboardHTML(c) {
+  const ally = isAllyActive();
   return `
     <div class="config-banner">
       CONFIG MODE
@@ -818,7 +865,8 @@ function renderDashboardHTML(c) {
     </div>
 
     <div class="dash-identity">
-      ${renderIdentity(c)}
+      ${ally ? renderAllyIdentity(c) : renderIdentity(c)}
+      ${ally ? "" : renderAllyBar()}
       <div class="ability-row">
         ${ABILITIES.map(a => renderAbility(c, a)).join("")}
       </div>
@@ -847,31 +895,91 @@ function renderDashboardHTML(c) {
           ${renderProficiencies(c)}
         </div>
       </div>
+      ${ally ? "" : `
       <div class="bottom-col">
         <div class="panel" style="flex:1;">
           <div class="panel-header">SKILLS</div>
           ${renderSkills(c)}
         </div>
-      </div>
+      </div>`}
       <div class="bottom-col">
         <div class="panel" style="flex:1;">
           <div class="panel-header">ACTIONS</div>
-          ${renderActions(c)}
+          ${renderActions(c, { allowSlots: !ally })}
         </div>
       </div>
     </div>
   `;
 }
 
+// ----- ally identity + ally bar -----
+function renderAllyIdentity(c) {
+  const back = escapeHtml(character.name || "character");
+  if (configMode) {
+    return `
+      <div class="char-name">
+        <input id="cfg-name" type="text" placeholder="Ally Name" value="${escapeHtml(c.name)}" />
+      </div>
+      <div class="char-meta">
+        <input id="cfg-ally-type" class="ally-type-input" type="text" placeholder="Ally type. IE: Pet, Automaton, Apprentice, Drone, etc." value="${escapeHtml(c.ally_type || "")}" />
+        <button class="btn tiny ally-return" id="ally-return">Return to ${back}</button>
+      </div>
+    `;
+  }
+  const nameDisplay = c.name ? escapeHtml(c.name) : `<span class="placeholder">Unnamed ally</span>`;
+  return `
+    <div class="char-name">${nameDisplay}</div>
+    <div class="char-meta">
+      <span>${c.ally_type ? escapeHtml(c.ally_type) : "Ally"}</span>
+      <button class="btn tiny ally-return" id="ally-return">Return to ${back}</button>
+    </div>
+  `;
+}
+
+// The chips shown on the MAIN character sheet: enter an ally's sheet, and (in
+// view mode) adjust its HP inline without diving in.
+function renderAllyBar() {
+  const allies = character.allies || [];
+  if (configMode) {
+    return `<div class="ally-bar">
+      ${allies.map(a => `
+        <div class="ally-chip">
+          <button class="ally-chip-name" data-enter-ally="${a.id}">${a.name ? escapeHtml(a.name) : "[Ally Name]"}</button>
+          <button class="ally-chip-del" data-delete-ally="${a.id}" title="delete">×</button>
+        </div>`).join("")}
+      <button class="btn tiny ally-add" id="add-ally">+ Ally</button>
+    </div>`;
+  }
+  if (allies.length === 0) return "";
+  return `<div class="ally-bar">
+    ${allies.map(a => {
+      const cur = a.hp ? a.hp.current : 0;
+      const max = a.hp ? a.hp.max : 0;
+      return `<div class="ally-chip ally-chip-view">
+        <button class="ally-chip-name" data-enter-ally="${a.id}">${a.name ? escapeHtml(a.name) : "[Ally Name]"}</button>
+        <span class="ally-chip-hp">${cur}/${max}</span>
+        <input class="ally-hp-amt" type="number" min="0" placeholder="0" data-ally-amt="${a.id}" />
+        <button class="btn danger tiny" data-ally-harm="${a.id}">HARM</button>
+        <button class="btn success tiny" data-ally-heal="${a.id}">HEAL</button>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
 // ----- portrait -----
 function renderPortraitInner(c) {
-  if (portraitDataUrl) {
+  // Ally portraits aren't wired yet — always show the letter placeholder for
+  // allies so we don't accidentally show the main character's portrait.
+  if (!isAllyActive() && portraitDataUrl) {
     return `<img src="${portraitDataUrl}" alt="portrait" />
             <div class="portrait-hint">${configMode ? "CLICK TO CHANGE" : "CLICK TO EDIT"}</div>`;
   }
   const initial = (c.name || "?").trim().charAt(0).toUpperCase() || "?";
+  const hint = isAllyActive()
+    ? (configMode ? "" : "CLICK TO EDIT")
+    : (configMode ? "CLICK TO UPLOAD" : "CLICK TO EDIT");
   return `<div class="portrait-placeholder">${escapeHtml(initial)}</div>
-          <div class="portrait-hint">${configMode ? "CLICK TO UPLOAD" : "CLICK TO EDIT"}</div>`;
+          ${hint ? `<div class="portrait-hint">${hint}</div>` : ""}`;
 }
 
 // ----- identity -----
@@ -1122,7 +1230,8 @@ function renderProficiencies(c) {
 }
 
 // ----- actions block -----
-function renderActions(c) {
+function renderActions(c, opts) {
+  const allowSlots = !opts || opts.allowSlots !== false;
   let html = "";
 
   // Spell slots
@@ -1213,6 +1322,7 @@ function renderActions(c) {
                 </select>
                 <button class="attack-delete" data-delete-action="${a.id}" title="delete">×</button>
               </div>
+              ${allowSlots ? `
               <div class="attack-spell-cfg">
                 <span class="aspell-label">SLOT</span>
                 <select data-field="slot_level">
@@ -1227,7 +1337,7 @@ function renderActions(c) {
                   </select>
                   ${up !== "none" ? `<input data-field="upcast_amount" type="text" class="aspell-amount" value="${escapeHtml(a.upcast_amount || "")}" placeholder="${up === "dice" ? "1d8" : "1"}" />` : ``}
                 ` : ``}
-              </div>
+              </div>` : ``}
             </div>
           `;
         } else {
@@ -1443,6 +1553,8 @@ async function onPortraitClick() {
     renderDashboard();
     return;
   }
+  // Ally portraits aren't wired yet — clicking just keeps you in config.
+  if (isAllyActive()) return;
   // In config mode, click → upload new portrait.
   try {
     const r = await window.pywebview.api.pick_portrait();
@@ -1456,10 +1568,20 @@ async function onPortraitClick() {
 }
 
 function wireConfigInputs() {
+  // The dashboard may be showing the main character or a nested ally; edits go
+  // to whichever is active. Character-only inputs (class/level/origin/skills)
+  // simply aren't rendered for allies, so their handlers never bind there.
+  const sheet = currentSheet();
+
+  // Ally-only: type field + the "Return to character" button.
+  bindInput("cfg-ally-type", "input", v => { sheet.ally_type = v; saveCharacter(); });
+  const allyReturn = document.getElementById("ally-return");
+  if (allyReturn) allyReturn.addEventListener("click", () => { activeAllyId = null; renderDashboard(); });
+
   // Identity. Name triggers a rerender so the portrait placeholder initial
   // updates as you type; origin/subclass don't show anywhere else in config
   // mode, so they just save without re-rendering (cheaper).
-  bindInput("cfg-name", "input", v => { character.name = v; saveAndRerender(); });
+  bindInput("cfg-name", "input", v => { sheet.name = v; saveAndRerender(); });
   bindInput("cfg-origin", "input", v => { character.origin = v; saveCharacter(); });
   bindInput("cfg-subclass", "input", v => { character.subclass = v; saveCharacter(); });
   bindInput("cfg-class", "change", v => {
@@ -1481,29 +1603,29 @@ function wireConfigInputs() {
   document.querySelectorAll(".cfg-ability").forEach(input => {
     input.addEventListener("change", e => {
       const ab = e.target.dataset.ab;
-      character.abilities[ab] = clamp(Number(e.target.value), 1, 30);
+      sheet.abilities[ab] = clamp(Number(e.target.value), 1, 30);
       saveAndRerender();
     });
   });
 
   // Speed (no rerender — only the input itself displays this in config mode)
-  bindInput("cfg-speed", "input", v => { character.speed = Math.max(0, Number(v) || 0); saveCharacter(); });
+  bindInput("cfg-speed", "input", v => { sheet.speed = Math.max(0, Number(v) || 0); saveCharacter(); });
 
   // HP max — "change" not "input" for the same caret/clamp reason.
   bindInput("cfg-hp-max", "change", v => {
     const n = Math.max(1, Number(v) || 1);
-    character.hp.max = n;
-    if (character.hp.current > n) character.hp.current = n;
+    sheet.hp.max = n;
+    if (sheet.hp.current > n) sheet.hp.current = n;
     saveAndRerender();
   });
 
   // Armor
-  bindInput("cfg-armor-type", "change", v => { character.armor.type = v; saveAndRerender(); });
-  bindInput("cfg-armor-base", "input", v => { character.armor.base_ac = Number(v) || 0; saveAndRerender(); });
-  bindInput("cfg-armor-misc", "input", v => { character.armor.misc_bonus = Number(v) || 0; saveAndRerender(); });
+  bindInput("cfg-armor-type", "change", v => { sheet.armor.type = v; saveAndRerender(); });
+  bindInput("cfg-armor-base", "input", v => { sheet.armor.base_ac = Number(v) || 0; saveAndRerender(); });
+  bindInput("cfg-armor-misc", "input", v => { sheet.armor.misc_bonus = Number(v) || 0; saveAndRerender(); });
   const shield = document.getElementById("cfg-armor-shield");
   if (shield) shield.addEventListener("change", e => {
-    character.armor.shield = e.target.checked;
+    sheet.armor.shield = e.target.checked;
     saveAndRerender();
   });
 
@@ -1511,9 +1633,9 @@ function wireConfigInputs() {
   document.querySelectorAll(".prof-dot[data-save]").forEach(dot => {
     dot.addEventListener("click", () => {
       const ab = dot.dataset.save;
-      const set = new Set(character.saves_proficient || []);
+      const set = new Set(sheet.saves_proficient || []);
       if (set.has(ab)) set.delete(ab); else set.add(ab);
-      character.saves_proficient = Array.from(set);
+      sheet.saves_proficient = Array.from(set);
       saveAndRerender();
     });
   });
@@ -1532,8 +1654,26 @@ function wireConfigInputs() {
   // Proficiencies textareas
   document.querySelectorAll("textarea[data-prof]").forEach(ta => {
     ta.addEventListener("input", e => {
-      character.proficiencies[e.target.dataset.prof] = e.target.value;
+      sheet.proficiencies[e.target.dataset.prof] = e.target.value;
       saveCharacter();
+    });
+  });
+
+  // Ally management (main character only): add, delete, enter an ally's sheet.
+  const addAlly = document.getElementById("add-ally");
+  if (addAlly) addAlly.addEventListener("click", () => {
+    const ally = newAlly();
+    character.allies.push(ally);
+    activeAllyId = ally.id;
+    saveAndRerender();
+  });
+  document.querySelectorAll("[data-enter-ally]").forEach(btn => {
+    btn.addEventListener("click", () => { activeAllyId = btn.dataset.enterAlly; renderDashboard(); });
+  });
+  document.querySelectorAll("[data-delete-ally]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      character.allies = character.allies.filter(a => a.id !== btn.dataset.deleteAlly);
+      saveAndRerender();
     });
   });
 
@@ -1543,7 +1683,7 @@ function wireConfigInputs() {
     const id = row.dataset.actionId;
     row.querySelectorAll("[data-field]").forEach(input => {
       input.addEventListener("input", e => {
-        const action = character.actions.find(a => a.id === id);
+        const action = sheet.actions.find(a => a.id === id);
         if (!action) return;
         const field = e.target.dataset.field;
         if (field === "hit_mod" || field === "slot_level") action[field] = Number(e.target.value) || 0;
@@ -1557,14 +1697,14 @@ function wireConfigInputs() {
   document.querySelectorAll("[data-delete-action]").forEach(btn => {
     btn.addEventListener("click", () => {
       const id = btn.dataset.deleteAction;
-      character.actions = character.actions.filter(a => a.id !== id);
+      sheet.actions = sheet.actions.filter(a => a.id !== id);
       saveAndRerender();
     });
   });
   const addBtn = document.getElementById("add-attack");
   if (addBtn) addBtn.addEventListener("click", () => {
     const type = document.getElementById("add-attack-type").value;
-    character.actions.push({
+    sheet.actions.push({
       id: "a" + Date.now() + Math.random().toString(36).slice(2, 7),
       name: "", hit_mod: 0, damage: "", action_type: type,
       slot_level: 0, upcast: "none", upcast_amount: "",
@@ -1574,6 +1714,10 @@ function wireConfigInputs() {
 }
 
 function wireViewInteractions() {
+  // The visible sheet's own controls (HP, rests, economy, casting, rolls) act
+  // on whichever sheet is shown — main character or active ally.
+  const sheet = currentSheet();
+
   // HP buttons
   const harm = document.getElementById("hp-harm");
   const heal = document.getElementById("hp-heal");
@@ -1594,13 +1738,13 @@ function wireViewInteractions() {
   document.querySelectorAll(".economy-pill").forEach(pill => {
     pill.addEventListener("click", () => {
       const k = pill.dataset.econ;
-      character.action_economy[k] = !character.action_economy[k];
+      sheet.action_economy[k] = !sheet.action_economy[k];
       saveAndRerender();
     });
   });
   const reset = document.getElementById("econ-reset");
   if (reset) reset.addEventListener("click", () => {
-    Object.keys(character.action_economy).forEach(k => character.action_economy[k] = true);
+    Object.keys(sheet.action_economy).forEach(k => sheet.action_economy[k] = true);
     saveAndRerender();
   });
 
@@ -1609,7 +1753,7 @@ function wireViewInteractions() {
     pip.addEventListener("click", () => {
       const lv = pip.dataset.slotLevel;
       const idx = Number(pip.dataset.slotIdx);
-      const slot = character.spell_slots[lv];
+      const slot = (sheet.spell_slots || {})[lv];
       if (!slot) return;
       // Click a used pip → unspend (decrement). Click empty pip → spend (increment).
       if (idx < slot.used) slot.used = idx;
@@ -1620,7 +1764,7 @@ function wireViewInteractions() {
   document.querySelectorAll(".slot-pip[data-pact-idx]").forEach(pip => {
     pip.addEventListener("click", () => {
       const idx = Number(pip.dataset.pactIdx);
-      const slot = character.pact_slots;
+      const slot = sheet.pact_slots;
       if (!slot) return;
       if (idx < slot.used) slot.used = idx;
       else slot.used = idx + 1;
@@ -1633,8 +1777,8 @@ function wireViewInteractions() {
   document.querySelectorAll("[data-cast]").forEach(btn => {
     btn.addEventListener("click", () => {
       const lv = Number(btn.dataset.castLevel);
-      const action = character.actions.find(a => a.id === btn.dataset.cast);
-      const slot = character.spell_slots[String(lv)];
+      const action = sheet.actions.find(a => a.id === btn.dataset.cast);
+      const slot = (sheet.spell_slots || {})[String(lv)];
       if (!slot || slot.used >= slot.max) return;
       slot.used += 1;
       expandedUpcastId = null;
@@ -1654,7 +1798,7 @@ function wireViewInteractions() {
   // Roll damage on a non-spell action (weapon attacks, etc.).
   document.querySelectorAll("[data-roll-damage]").forEach(btn => {
     btn.addEventListener("click", () => {
-      const action = character.actions.find(a => a.id === btn.dataset.rollDamage);
+      const action = sheet.actions.find(a => a.id === btn.dataset.rollDamage);
       if (!action) return;
       const roll = rollDamageForAction(action, Number(action.slot_level) || 0);
       if (roll) showRoll({ title: action.name || "Damage", total: roll.total, breakdown: roll.breakdown });
@@ -1665,14 +1809,38 @@ function wireViewInteractions() {
   document.querySelectorAll("[data-roll-attack]").forEach(btn => {
     btn.addEventListener("click", () => {
       const kind = btn.dataset.rollAttack;
-      const pb = profBonus(character.level);
+      const pb = profBonus(sheet.level);
       let bonus = 0, label = "Attack";
-      if (kind === "melee") { bonus = pb + abilityMod(character.abilities.STR); label = "Melee Attack"; }
-      else if (kind === "ranged") { bonus = pb + abilityMod(character.abilities.DEX); label = "Ranged Attack"; }
-      else if (kind === "spell") { bonus = calcSpellAttack(character) || 0; label = "Spell Attack"; }
+      if (kind === "melee") { bonus = pb + abilityMod(sheet.abilities.STR); label = "Melee Attack"; }
+      else if (kind === "ranged") { bonus = pb + abilityMod(sheet.abilities.DEX); label = "Ranged Attack"; }
+      else if (kind === "spell") { bonus = calcSpellAttack(sheet) || 0; label = "Spell Attack"; }
       const d20 = rollOne(20);
       const total = d20 + bonus;
       showRoll({ title: label, total, breakdown: `d20 (${d20}) ${bonus >= 0 ? "+" : "−"} ${Math.abs(bonus)} = ${total}` });
+    });
+  });
+
+  // Ally chips on the main character: enter an ally's sheet, or adjust its HP
+  // inline without diving in.
+  document.querySelectorAll("[data-enter-ally]").forEach(btn => {
+    btn.addEventListener("click", () => { activeAllyId = btn.dataset.enterAlly; renderDashboard(); });
+  });
+  const allyReturn = document.getElementById("ally-return");
+  if (allyReturn) allyReturn.addEventListener("click", () => { activeAllyId = null; renderDashboard(); });
+  const allyAmt = id => {
+    const el = document.querySelector(`.ally-hp-amt[data-ally-amt="${id}"]`);
+    return Math.max(0, Number(el?.value) || 0);
+  };
+  document.querySelectorAll("[data-ally-harm]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const ally = (character.allies || []).find(a => a.id === btn.dataset.allyHarm);
+      if (ally) applyDamage(allyAmt(ally.id), ally);
+    });
+  });
+  document.querySelectorAll("[data-ally-heal]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const ally = (character.allies || []).find(a => a.id === btn.dataset.allyHeal);
+      if (ally) applyHeal(allyAmt(ally.id), ally);
     });
   });
 }
@@ -1681,47 +1849,54 @@ function wireViewInteractions() {
 // HEALTH ACTIONS
 // ============================================================
 
-function applyDamage(amount) {
+// HP helpers take an optional target sheet (defaults to the visible one) so
+// ally HP can be adjusted from the main character's chips.
+function applyDamage(amount, target) {
+  const t = target || currentSheet();
   if (!amount) return;
   let remaining = amount;
-  if (character.hp.temp > 0) {
-    if (remaining <= character.hp.temp) {
-      character.hp.temp -= remaining;
+  if (t.hp.temp > 0) {
+    if (remaining <= t.hp.temp) {
+      t.hp.temp -= remaining;
       remaining = 0;
     } else {
-      remaining -= character.hp.temp;
-      character.hp.temp = 0;
+      remaining -= t.hp.temp;
+      t.hp.temp = 0;
     }
   }
-  character.hp.current = Math.max(0, character.hp.current - remaining);
+  t.hp.current = Math.max(0, t.hp.current - remaining);
   saveAndRerender();
 }
 
-function applyHeal(amount) {
+function applyHeal(amount, target) {
+  const t = target || currentSheet();
   if (!amount) return;
-  character.hp.current = Math.min(character.hp.max, character.hp.current + amount);
+  t.hp.current = Math.min(t.hp.max, t.hp.current + amount);
   saveAndRerender();
 }
 
-function applyTemp(amount) {
+function applyTemp(amount, target) {
+  const t = target || currentSheet();
   if (!amount) return;
   // 5e rule: temp HP doesn't stack — take the higher value.
-  character.hp.temp = Math.max(character.hp.temp || 0, amount);
+  t.hp.temp = Math.max(t.hp.temp || 0, amount);
   saveAndRerender();
 }
 
 function shortRest() {
   // Restore Warlock pact slots only.
-  if (character.pact_slots) character.pact_slots.used = 0;
+  const t = currentSheet();
+  if (t.pact_slots) t.pact_slots.used = 0;
   saveAndRerender();
 }
 
 function longRest() {
-  character.hp.current = character.hp.max;
-  character.hp.temp = 0;
-  Object.keys(character.spell_slots).forEach(lv => character.spell_slots[lv].used = 0);
-  if (character.pact_slots) character.pact_slots.used = 0;
-  Object.keys(character.action_economy).forEach(k => character.action_economy[k] = true);
+  const t = currentSheet();
+  t.hp.current = t.hp.max;
+  t.hp.temp = 0;
+  if (t.spell_slots) Object.keys(t.spell_slots).forEach(lv => t.spell_slots[lv].used = 0);
+  if (t.pact_slots) t.pact_slots.used = 0;
+  if (t.action_economy) Object.keys(t.action_economy).forEach(k => t.action_economy[k] = true);
   saveAndRerender();
 }
 
