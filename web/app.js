@@ -1260,7 +1260,8 @@ function wireConfigInputs() {
     rebuildSpellSlots(character);
     saveAndRerender();
   });
-  bindInput("cfg-level", "input", v => {
+  // "change" not "input" — same caret/clamp problem as the ability fields below.
+  bindInput("cfg-level", "change", v => {
     character.level = clamp(Number(v), 1, 20);
     rebuildSpellSlots(character);
     saveAndRerender();
@@ -1281,8 +1282,8 @@ function wireConfigInputs() {
   // Speed (no rerender — only the input itself displays this in config mode)
   bindInput("cfg-speed", "input", v => { character.speed = Math.max(0, Number(v) || 0); saveCharacter(); });
 
-  // HP max
-  bindInput("cfg-hp-max", "input", v => {
+  // HP max — "change" not "input" for the same caret/clamp reason.
+  bindInput("cfg-hp-max", "change", v => {
     const n = Math.max(1, Number(v) || 1);
     character.hp.max = n;
     if (character.hp.current > n) character.hp.current = n;
