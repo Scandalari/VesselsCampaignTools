@@ -828,6 +828,42 @@ html, body {
 }
 .attack-spell-cfg .aspell-amount { width: 64px; }
 
+/* custom resource editor (config) + pip rows (view) */
+.res-cfg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 6px;
+  border: 1px solid #14141f;
+  margin-bottom: 4px;
+}
+.res-cfg input, .res-cfg select {
+  background: #0a0a14;
+  border: 1px solid #1a1a2e;
+  color: #e6e0f0;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 5px;
+}
+.res-cfg .res-name { flex: 1; min-width: 90px; }
+.res-cfg .res-max { width: 48px; }
+.res-group {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+}
+.res-name-label {
+  color: #b54ad6;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+.charge-pips { margin-left: 2px; }
+
 /* cast / upcast controls (view mode) */
 .cast-bar {
   display: flex;

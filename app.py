@@ -15,7 +15,7 @@ import webview
 
 # Source of truth for app version. installer.iss MyAppVersion must match
 # before each release build (build.bat handles the bump for both).
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 GITHUB_REPO = "Scandalari/VesselsCampaignTools"
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -83,6 +83,7 @@ DEFAULT_CHARACTER = {
     "inventory": [],
     "notes": {"folders": [], "items": []},
     "allies": [],
+    "resources": [],
 }
 
 WINDOW_TITLE = "Kizuna Tablet"

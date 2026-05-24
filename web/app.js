@@ -496,6 +496,7 @@ function createDefaultCharacter() {
     inventory: [],
     notes: { folders: [], items: [] },
     allies: [],
+    resources: [],
   };
 }
 
@@ -519,6 +520,7 @@ function newAlly() {
     actions: [],
     action_economy: { Action: true, Bonus: true, Reaction: true, Movement: true, Object: true },
     proficiencies: { armor: "", weapons: "", tools: "", languages: "" },
+    resources: [],
   };
 }
 
@@ -560,6 +562,8 @@ async function loadCharacter() {
   } catch (e) {}
   if (!character) character = createDefaultCharacter();
   if (!Array.isArray(character.allies)) character.allies = [];
+  if (!Array.isArray(character.resources)) character.resources = [];
+  character.allies.forEach(a => { if (!Array.isArray(a.resources)) a.resources = []; });
   migrateInventory(character);
   migrateNotes(character);
   // Always rebuild spell slots after load so changing class outside the app
@@ -1235,6 +1239,47 @@ function renderProficiencies(c) {
   return `<div class="profs-list">${rows}</div>`;
 }
 
+// ----- custom resources (named pools rendered like spell slots) -----
+function renderResources(c) {
+  const resources = c.resources || [];
+  if (configMode) {
+    let html = `<div class="actions-section">
+      <div class="actions-section-header">RESOURCES</div>`;
+    resources.forEach(r => {
+      html += `<div class="res-cfg" data-res-id="${r.id}">
+        <input class="res-name" data-res-field="name" type="text" value="${escapeHtml(r.name || "")}" placeholder="Resource name" />
+        <input class="res-max aspell-amount" data-res-field="max" type="number" min="1" value="${r.max || 1}" />
+        <span class="aspell-label">PER</span>
+        <select data-res-field="recharge">
+          <option value="short" ${r.recharge === "short" ? "selected" : ""}>Short rest</option>
+          <option value="long" ${r.recharge === "long" ? "selected" : ""}>Long rest</option>
+          <option value="manual" ${r.recharge === "manual" ? "selected" : ""}>Manual</option>
+        </select>
+        <button class="attack-delete" data-delete-res="${r.id}" title="delete">×</button>
+      </div>`;
+    });
+    html += `<div class="add-attack-row"><button class="btn tiny" id="add-resource">+ RESOURCE</button></div>`;
+    html += `</div>`;
+    return html;
+  }
+  if (resources.length === 0) return "";
+  let html = `<div class="actions-section">
+    <div class="actions-section-header">RESOURCES</div>`;
+  resources.forEach(r => {
+    const max = Number(r.max) || 0;
+    let pips = "";
+    for (let i = 0; i < max; i++) {
+      pips += `<button class="slot-pip ${i < r.used ? "used" : ""}" data-res-pip="${r.id}" data-res-idx="${i}"></button>`;
+    }
+    html += `<div class="res-group">
+      <div class="res-name-label">${escapeHtml(r.name || "Resource")}</div>
+      <div class="slot-pips">${pips}</div>
+    </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
 // ----- actions block -----
 function renderActions(c, opts) {
   const allowSlots = !opts || opts.allowSlots !== false;
@@ -1279,6 +1324,9 @@ function renderActions(c, opts) {
     html += `</div>`;
   }
 
+  // Custom resources (Superiority Dice, Bardic Inspiration, etc.)
+  html += renderResources(c);
+
   // Action economy
   html += `<div class="actions-section">
     <div class="actions-section-header" style="display:flex; justify-content:space-between; align-items:center;">
@@ -1316,6 +1364,7 @@ function renderActions(c, opts) {
       items.forEach(a => {
         const sl = Number(a.slot_level) || 0;
         const up = a.upcast || "none";
+        const costType = actionCostType(a);
         if (configMode) {
           html += `
             <div class="attack-cfg" data-action-id="${a.id}">
@@ -1328,26 +1377,48 @@ function renderActions(c, opts) {
                 </select>
                 <button class="attack-delete" data-delete-action="${a.id}" title="delete">×</button>
               </div>
-              ${allowSlots ? `
               <div class="attack-spell-cfg">
-                <span class="aspell-label">SLOT</span>
-                <select data-field="slot_level">
-                  <option value="0" ${sl === 0 ? "selected" : ""}>—</option>
-                  ${[1,2,3,4,5,6,7,8,9].map(n => `<option value="${n}" ${sl === n ? "selected" : ""}>${ordinal(n)}</option>`).join("")}
+                <span class="aspell-label">COST</span>
+                <select data-field="cost_type">
+                  <option value="none" ${costType === "none" ? "selected" : ""}>None</option>
+                  ${allowSlots ? `<option value="slot" ${costType === "slot" ? "selected" : ""}>Spell slot</option>` : ``}
+                  <option value="resource" ${costType === "resource" ? "selected" : ""}>Resource</option>
+                  <option value="charges" ${costType === "charges" ? "selected" : ""}>Per rest</option>
                 </select>
-                ${sl > 0 ? `
-                  <select data-field="upcast">
-                    <option value="none" ${up === "none" ? "selected" : ""}>No upcast</option>
-                    <option value="dice" ${up === "dice" ? "selected" : ""}>+ Dice / level</option>
-                    <option value="targets" ${up === "targets" ? "selected" : ""}>+ Targets / level</option>
+                ${costType === "slot" && allowSlots ? `
+                  <select data-field="slot_level">
+                    <option value="0" ${sl === 0 ? "selected" : ""}>—</option>
+                    ${[1,2,3,4,5,6,7,8,9].map(n => `<option value="${n}" ${sl === n ? "selected" : ""}>${ordinal(n)}</option>`).join("")}
                   </select>
-                  ${up !== "none" ? `<input data-field="upcast_amount" type="text" class="aspell-amount" value="${escapeHtml(a.upcast_amount || "")}" placeholder="${up === "dice" ? "1d8" : "1"}" />` : ``}
+                  ${sl > 0 ? `
+                    <select data-field="upcast">
+                      <option value="none" ${up === "none" ? "selected" : ""}>No upcast</option>
+                      <option value="dice" ${up === "dice" ? "selected" : ""}>+ Dice / level</option>
+                      <option value="targets" ${up === "targets" ? "selected" : ""}>+ Targets / level</option>
+                    </select>
+                    ${up !== "none" ? `<input data-field="upcast_amount" type="text" class="aspell-amount" value="${escapeHtml(a.upcast_amount || "")}" placeholder="${up === "dice" ? "1d8" : "1"}" />` : ``}
+                  ` : ``}
                 ` : ``}
-              </div>` : ``}
+                ${costType === "resource" ? `
+                  <select data-field="cost_resource_id">
+                    <option value="">(pick resource)</option>
+                    ${(c.resources || []).map(r => `<option value="${r.id}" ${a.cost_resource_id === r.id ? "selected" : ""}>${escapeHtml(r.name || "Resource")}</option>`).join("")}
+                  </select>
+                ` : ``}
+                ${costType === "charges" ? `
+                  <input data-field="charge_max" type="number" min="1" class="aspell-amount" value="${(a.charges && a.charges.max) || 1}" />
+                  <span class="aspell-label">PER</span>
+                  <select data-field="charge_recharge">
+                    <option value="short" ${a.charges && a.charges.recharge === "short" ? "selected" : ""}>Short rest</option>
+                    <option value="long" ${(!a.charges || a.charges.recharge === "long") ? "selected" : ""}>Long rest</option>
+                    <option value="manual" ${a.charges && a.charges.recharge === "manual" ? "selected" : ""}>Manual</option>
+                  </select>
+                ` : ``}
+              </div>
             </div>
           `;
         } else {
-          const canRoll = sl === 0 && (a.damage || "").trim() !== "";
+          const canRoll = costType === "none" && (a.damage || "").trim() !== "";
           html += `
             <div class="attack-view">
               <div class="attack-row">
@@ -1357,15 +1428,15 @@ function renderActions(c, opts) {
                 <div class="attack-type">${a.action_type.toUpperCase()}</div>
                 <div>${canRoll ? `<button class="row-roll" data-roll-damage="${a.id}">ROLL</button>` : ""}</div>
               </div>`;
-          if (sl > 0) {
-            const baseSlot = c.spell_slots[String(sl)];
+          if (costType === "slot" && sl > 0) {
+            const baseSlot = (c.spell_slots || {})[String(sl)];
             const baseAvail = baseSlot && baseSlot.used < baseSlot.max;
             html += `<div class="cast-bar">
               <button class="cast-btn" data-cast="${a.id}" data-cast-level="${sl}" ${baseAvail ? "" : "disabled"}>CAST ${ordinal(sl)}</button>
               ${up !== "none" ? `<button class="upcast-btn ${expandedUpcastId === a.id ? "open" : ""}" data-upcast-toggle="${a.id}">UPCAST</button>` : ``}
             </div>`;
             if (up !== "none" && expandedUpcastId === a.id) {
-              const higher = Object.keys(c.spell_slots)
+              const higher = Object.keys(c.spell_slots || {})
                 .map(Number)
                 .filter(L => L > sl && c.spell_slots[String(L)].used < c.spell_slots[String(L)].max)
                 .sort((x, y) => x - y);
@@ -1382,6 +1453,23 @@ function renderActions(c, opts) {
               }
               html += `</div>`;
             }
+          } else if (costType === "resource") {
+            const res = (c.resources || []).find(r => r.id === a.cost_resource_id);
+            const avail = res && res.used < res.max;
+            html += `<div class="cast-bar">
+              <button class="cast-btn" data-use-action="${a.id}" ${avail ? "" : "disabled"}>USE${res ? ` · ${escapeHtml(res.name || "Resource")}` : ""}</button>
+            </div>`;
+          } else if (costType === "charges") {
+            const ch = a.charges || { max: 1, used: 0, recharge: "long" };
+            const avail = ch.used < ch.max;
+            let pips = "";
+            for (let i = 0; i < (Number(ch.max) || 0); i++) {
+              pips += `<button class="slot-pip ${i < ch.used ? "used" : ""}" data-charge-pip="${a.id}" data-charge-idx="${i}"></button>`;
+            }
+            html += `<div class="cast-bar">
+              <button class="cast-btn" data-use-action="${a.id}" ${avail ? "" : "disabled"}>USE</button>
+              <div class="slot-pips charge-pips">${pips}</div>
+            </div>`;
           }
           html += `</div>`;
         }
@@ -1457,6 +1545,14 @@ function actionEffectAt(a, level) {
   }
 
   return dmg || "—";
+}
+
+// An action's cost: "none" (at-will), "slot" (spell slot + upcast), "resource"
+// (spends a named pool like Superiority Dice), or "charges" (its own N-per-rest
+// uses). Old saves predate cost_type, so derive it from slot_level.
+function actionCostType(a) {
+  if (a.cost_type) return a.cost_type;
+  return (Number(a.slot_level) || 0) > 0 ? "slot" : "none";
 }
 
 // ============================================================
@@ -1691,7 +1787,7 @@ function wireConfigInputs() {
   });
 
   // Attack rows in config (the wrapper holds both the main row and the
-  // spell-slot sub-row, so query the wrapper for all data-field inputs).
+  // cost sub-row, so query the wrapper for all data-field inputs).
   document.querySelectorAll(".attack-cfg[data-action-id]").forEach(row => {
     const id = row.dataset.actionId;
     row.querySelectorAll("[data-field]").forEach(input => {
@@ -1699,11 +1795,31 @@ function wireConfigInputs() {
         const action = sheet.actions.find(a => a.id === id);
         if (!action) return;
         const field = e.target.dataset.field;
-        if (field === "hit_mod" || field === "slot_level") action[field] = Number(e.target.value) || 0;
-        else action[field] = e.target.value;
-        // Dropdowns that reveal/hide other fields need a redraw; text saves quietly.
-        if (field === "action_type" || field === "slot_level" || field === "upcast") saveAndRerender();
-        else saveCharacter();
+        // "Per rest" charges live in a nested object; cost dropdowns rebuild it.
+        if (field === "cost_type") {
+          action.cost_type = e.target.value;
+          if (action.cost_type === "charges" && !action.charges) {
+            action.charges = { max: 1, used: 0, recharge: "long" };
+          }
+          saveAndRerender();
+        } else if (field === "charge_max") {
+          if (!action.charges) action.charges = { max: 1, used: 0, recharge: "long" };
+          action.charges.max = Math.max(1, Number(e.target.value) || 1);
+          if (action.charges.used > action.charges.max) action.charges.used = action.charges.max;
+          saveAndRerender();
+        } else if (field === "charge_recharge") {
+          if (!action.charges) action.charges = { max: 1, used: 0, recharge: "long" };
+          action.charges.recharge = e.target.value;
+          saveCharacter();
+        } else if (field === "hit_mod" || field === "slot_level") {
+          action[field] = Number(e.target.value) || 0;
+          if (field === "slot_level") saveAndRerender(); else saveCharacter();
+        } else {
+          action[field] = e.target.value;
+          // Dropdowns that reveal/hide dependent fields need a redraw.
+          if (field === "action_type" || field === "upcast") saveAndRerender();
+          else saveCharacter();
+        }
       });
     });
   });
@@ -1720,7 +1836,45 @@ function wireConfigInputs() {
     sheet.actions.push({
       id: "a" + Date.now() + Math.random().toString(36).slice(2, 7),
       name: "", hit_mod: 0, damage: "", action_type: type,
-      slot_level: 0, upcast: "none", upcast_amount: "",
+      cost_type: "none", slot_level: 0, upcast: "none", upcast_amount: "",
+    });
+    saveAndRerender();
+  });
+
+  // Custom resource editor (name / max / recharge / delete / add).
+  document.querySelectorAll(".res-cfg[data-res-id]").forEach(row => {
+    const id = row.dataset.resId;
+    row.querySelectorAll("[data-res-field]").forEach(input => {
+      input.addEventListener("input", e => {
+        const res = (sheet.resources || []).find(r => r.id === id);
+        if (!res) return;
+        const field = e.target.dataset.resField;
+        if (field === "max") {
+          res.max = Math.max(1, Number(e.target.value) || 1);
+          if (res.used > res.max) res.used = res.max;
+          saveAndRerender();
+        } else if (field === "recharge") {
+          res.recharge = e.target.value;
+          saveCharacter();
+        } else {
+          res.name = e.target.value;
+          saveCharacter();
+        }
+      });
+    });
+  });
+  document.querySelectorAll("[data-delete-res]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      sheet.resources = (sheet.resources || []).filter(r => r.id !== btn.dataset.deleteRes);
+      saveAndRerender();
+    });
+  });
+  const addRes = document.getElementById("add-resource");
+  if (addRes) addRes.addEventListener("click", () => {
+    if (!sheet.resources) sheet.resources = [];
+    sheet.resources.push({
+      id: "r" + Date.now() + Math.random().toString(36).slice(2, 7),
+      name: "", max: 1, used: 0, recharge: "short",
     });
     saveAndRerender();
   });
@@ -1782,6 +1936,48 @@ function wireViewInteractions() {
       if (idx < slot.used) slot.used = idx;
       else slot.used = idx + 1;
       saveAndRerender();
+    });
+  });
+
+  // Custom resource pips (spend/restore; Manual resources only change here).
+  document.querySelectorAll("[data-res-pip]").forEach(pip => {
+    pip.addEventListener("click", () => {
+      const res = (sheet.resources || []).find(r => r.id === pip.dataset.resPip);
+      if (!res) return;
+      const idx = Number(pip.dataset.resIdx);
+      if (idx < res.used) res.used = idx; else res.used = idx + 1;
+      saveAndRerender();
+    });
+  });
+  // Per-action charge pips (same manual spend/restore).
+  document.querySelectorAll("[data-charge-pip]").forEach(pip => {
+    pip.addEventListener("click", () => {
+      const action = sheet.actions.find(a => a.id === pip.dataset.chargePip);
+      if (!action || !action.charges) return;
+      const idx = Number(pip.dataset.chargeIdx);
+      const ch = action.charges;
+      if (idx < ch.used) ch.used = idx; else ch.used = idx + 1;
+      saveAndRerender();
+    });
+  });
+  // USE a resource- or charge-cost action: spend one, then roll its damage.
+  document.querySelectorAll("[data-use-action]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const action = sheet.actions.find(a => a.id === btn.dataset.useAction);
+      if (!action) return;
+      const ct = actionCostType(action);
+      if (ct === "resource") {
+        const res = (sheet.resources || []).find(r => r.id === action.cost_resource_id);
+        if (!res || res.used >= res.max) return;
+        res.used += 1;
+      } else if (ct === "charges") {
+        const ch = action.charges;
+        if (!ch || ch.used >= ch.max) return;
+        ch.used += 1;
+      }
+      const roll = rollDamageForAction(action, Number(action.slot_level) || 0);
+      saveAndRerender();
+      if (roll) showRoll({ title: action.name || "Use", total: roll.total, breakdown: roll.breakdown });
     });
   });
 
@@ -1918,10 +2114,21 @@ function applyTemp(amount, target) {
   saveAndRerender();
 }
 
+// Recharge resources + per-action charges. A long rest also refills anything
+// that recharges on a short rest; Manual never auto-refills.
+function rechargeCharges(t, restType) {
+  const refills = restType === "long" ? ["short", "long"] : ["short"];
+  (t.resources || []).forEach(r => { if (refills.includes(r.recharge)) r.used = 0; });
+  (t.actions || []).forEach(a => {
+    if (a.charges && refills.includes(a.charges.recharge)) a.charges.used = 0;
+  });
+}
+
 function shortRest() {
-  // Restore Warlock pact slots only.
+  // Restore Warlock pact slots + short-rest resources/charges.
   const t = currentSheet();
   if (t.pact_slots) t.pact_slots.used = 0;
+  rechargeCharges(t, "short");
   saveAndRerender();
 }
 
@@ -1932,6 +2139,7 @@ function longRest() {
   if (t.spell_slots) Object.keys(t.spell_slots).forEach(lv => t.spell_slots[lv].used = 0);
   if (t.pact_slots) t.pact_slots.used = 0;
   if (t.action_economy) Object.keys(t.action_economy).forEach(k => t.action_economy[k] = true);
+  rechargeCharges(t, "long");
   saveAndRerender();
 }
 
